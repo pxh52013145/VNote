@@ -4,6 +4,7 @@ import {
   Captions,
   HardDriveDownload,
   Wrench,
+  Database,
 } from 'lucide-react'
 import MenuBar, { IMenuProps } from '@/pages/SettingPage/components/menuBar.tsx'
 
@@ -11,7 +12,7 @@ const Menu = () => {
   const menuList: IMenuProps[] = [
     {
       id: 'model',
-      name: 'AI 模型设置',
+      name: '视频处理模型设置',
       icon: <BotMessageSquare />,
       path: '/settings/model',
     },
@@ -28,6 +29,12 @@ const Menu = () => {
       name: '下载配置',
       icon: <HardDriveDownload />,
       path: '/settings/download',
+    },
+    {
+      id: 'dify',
+      name: 'Dify / RAG 配置',
+      icon: <Database />,
+      path: '/settings/dify',
     },
     // //其他配置
     // {

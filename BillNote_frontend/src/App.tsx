@@ -14,6 +14,7 @@ import Downloading from '@/components/Lottie/download.tsx'
 import Prompt from '@/pages/SettingPage/Prompt.tsx'
 import Downloader from '@/pages/SettingPage/Downloader.tsx'
 import DownloaderForm from '@/components/Form/DownloaderForm/Form.tsx'
+import DifySetting from '@/pages/SettingPage/Dify'
 import { useEffect } from 'react'
 import { systemCheck } from '@/services/system.ts'
 import { useCheckBackend } from '@/hooks/useCheckBackend.ts'
@@ -60,6 +61,7 @@ function App() {
                 <Route path="download" element={<Downloader />}>
                   <Route path=":id" element={<DownloaderForm />} />
                 </Route>
+                <Route path="dify" element={<DifySetting />} />
                 <Route path="*" element={<NotFoundPage />} />
               </Route>
             </Route>

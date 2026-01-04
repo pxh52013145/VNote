@@ -5,6 +5,8 @@ from typing import Any, Optional
 
 import httpx
 
+from app.services.dify_config_manager import DifyConfigManager
+
 
 class DifyError(RuntimeError):
     pass
@@ -22,20 +24,52 @@ class DifyConfig:
 
     @staticmethod
     def from_env() -> "DifyConfig":
-        base_url = os.getenv("DIFY_BASE_URL", "http://localhost").strip()
-        if not base_url:
-            base_url = "http://localhost"
-
+        # Defaults come from env/.env, but can be overridden by the persisted UI config.
+        base_url = os.getenv("DIFY_BASE_URL", "http://localhost").strip() or "http://localhost"
         dataset_id = os.getenv("DIFY_DATASET_ID", "").strip()
-        # Allow copying from paths like: "datasets/<uuid>" or "/datasets/<uuid>"
-        dataset_id = dataset_id.lstrip("/")
-        if dataset_id.startswith("datasets/"):
-            dataset_id = dataset_id.split("/", 1)[1].strip()
         service_api_key = os.getenv("DIFY_SERVICE_API_KEY")
         app_api_key = os.getenv("DIFY_APP_API_KEY")
         app_user = os.getenv("DIFY_APP_USER", "bilinote").strip() or "bilinote"
         indexing_technique = os.getenv("DIFY_INDEXING_TECHNIQUE", "high_quality").strip() or "high_quality"
-        timeout_seconds = float(os.getenv("DIFY_TIMEOUT_SECONDS", "60"))
+        timeout_seconds = float(os.getenv("DIFY_TIMEOUT_SECONDS", "60") or "60")
+
+        persisted = DifyConfigManager().get()
+        if isinstance(persisted, dict) and persisted:
+            p_base_url = str(persisted.get("base_url") or "").strip()
+            if p_base_url:
+                base_url = p_base_url
+
+            p_dataset_id = str(persisted.get("dataset_id") or "").strip()
+            if p_dataset_id:
+                dataset_id = p_dataset_id
+
+            p_service_key = str(persisted.get("service_api_key") or "").strip()
+            if p_service_key:
+                service_api_key = p_service_key
+
+            p_app_key = str(persisted.get("app_api_key") or "").strip()
+            if p_app_key:
+                app_api_key = p_app_key
+
+            p_app_user = str(persisted.get("app_user") or "").strip()
+            if p_app_user:
+                app_user = p_app_user
+
+            p_indexing = str(persisted.get("indexing_technique") or "").strip()
+            if p_indexing:
+                indexing_technique = p_indexing
+
+            p_timeout = persisted.get("timeout_seconds")
+            if p_timeout is not None:
+                try:
+                    timeout_seconds = float(p_timeout)
+                except (TypeError, ValueError):
+                    pass
+
+        # Allow copying from paths like: "datasets/<uuid>" or "/datasets/<uuid>"
+        dataset_id = dataset_id.lstrip("/")
+        if dataset_id.startswith("datasets/"):
+            dataset_id = dataset_id.split("/", 1)[1].strip()
 
         return DifyConfig(
             base_url=base_url,
