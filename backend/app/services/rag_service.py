@@ -1,4 +1,5 @@
 import re
+import os
 from collections import defaultdict
 from typing import Any, Iterable
 
@@ -20,11 +21,12 @@ def _merge_transcript_segments_by_chars(
     segments: list[Any] | None,
     *,
     max_chars: int = 900,
+    max_seconds: float = 60.0,
 ) -> list[tuple[float, float, str]]:
     """
     Dify indexing with Ollama embeddings may fail when a document is split into hundreds of tiny chunks.
     To reduce total chunks while preserving time ranges, merge consecutive transcript segments into
-    larger blocks capped by `max_chars` characters (rough heuristic).
+    larger blocks capped by `max_chars` characters and `max_seconds` duration (rough heuristic).
     """
     if not segments or max_chars <= 0:
         return []
@@ -48,7 +50,11 @@ def _merge_transcript_segments_by_chars(
         seg_end = float(getattr(seg, "end", seg_start) or seg_start)
 
         extra = (1 if buf else 0) + len(text)
-        if buf and (buf_len + extra) > max_chars:
+        span_ok = True
+        if max_seconds and max_seconds > 0 and start_ts is not None:
+            span_ok = (seg_end - float(start_ts)) <= float(max_seconds)
+
+        if buf and ((buf_len + extra) > max_chars or not span_ok):
             merged.append((float(start_ts or 0.0), float(end_ts or float(start_ts or 0.0)), " ".join(buf)))
             buf = [text]
             buf_len = len(text)
@@ -92,7 +98,13 @@ def build_rag_document_text(
     parts: list[str] = []
     parts.extend(header)
 
-    merged = _merge_transcript_segments_by_chars(transcript.segments, max_chars=900)
+    max_chars = int(os.getenv("RAG_TRANSCRIPT_MERGE_MAX_CHARS", "900") or "900")
+    max_seconds = float(os.getenv("RAG_TRANSCRIPT_MERGE_MAX_SECONDS", "60") or "60")
+    merged = _merge_transcript_segments_by_chars(
+        transcript.segments,
+        max_chars=max_chars,
+        max_seconds=max_seconds,
+    )
     if merged:
         for start_s, end_s, text in merged:
             start = _format_timestamp(start_s)
@@ -140,7 +152,13 @@ def build_rag_document_text_with_note(
     parts.append("[TRANSCRIPT]")
     parts.append("")
 
-    merged = _merge_transcript_segments_by_chars(transcript.segments, max_chars=900)
+    max_chars = int(os.getenv("RAG_TRANSCRIPT_MERGE_MAX_CHARS", "900") or "900")
+    max_seconds = float(os.getenv("RAG_TRANSCRIPT_MERGE_MAX_SECONDS", "60") or "60")
+    merged = _merge_transcript_segments_by_chars(
+        transcript.segments,
+        max_chars=max_chars,
+        max_seconds=max_seconds,
+    )
     if merged:
         for start_s, end_s, text in merged:
             start = _format_timestamp(start_s)
