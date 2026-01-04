@@ -275,7 +275,20 @@ class NoteGenerator:
         NOTE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         status_file = NOTE_OUTPUT_DIR / f"{task_id}.status.json"
         print(f"写入状态文件: {status_file} 当前状态: {status}")
-        data = {"status": status.value if isinstance(status, TaskStatus) else status}
+        normalized_status = status.value if isinstance(status, TaskStatus) else str(status)
+        progress = TaskStatus.progress(status)
+        if normalized_status == TaskStatus.FAILED.value and status_file.exists():
+            try:
+                existing = json.loads(status_file.read_text(encoding="utf-8"))
+                existing_progress = existing.get("progress")
+                if isinstance(existing_progress, (int, float)):
+                    progress = int(existing_progress)
+            except Exception:
+                pass
+        data = {
+            "status": normalized_status,
+            "progress": max(0, min(100, int(progress))),
+        }
         if message:
             data["message"] = message
 

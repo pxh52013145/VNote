@@ -21,15 +21,88 @@ interface NoteHistoryProps {
   selectedId: string | null
 }
 
+const clamp = (value: number, min = 0, max = 100) => Math.max(min, Math.min(max, value))
+
 const isDifyIndexingCompleted = (payload: any) => {
   const docs = payload?.data
   if (!Array.isArray(docs) || docs.length === 0) return false
   return docs.every(d => typeof d === 'object' && d && d.indexing_status === 'completed')
 }
 
+const getDifyIndexingProgress = (payload: any) => {
+  const docs = payload?.data
+  if (!Array.isArray(docs) || docs.length === 0) return null
+
+  let totalSegments = 0
+  let completedSegments = 0
+  let totalDocs = 0
+  let completedDocs = 0
+
+  for (const doc of docs) {
+    if (!doc || typeof doc !== 'object') continue
+
+    const total = (doc as any).total_segments
+    const completed = (doc as any).completed_segments
+    if (typeof total === 'number' && total > 0) {
+      totalSegments += total
+      if (typeof completed === 'number' && completed >= 0) {
+        completedSegments += Math.min(completed, total)
+      }
+      continue
+    }
+
+    const status = (doc as any).indexing_status
+    if (typeof status === 'string') {
+      totalDocs += 1
+      if (status === 'completed') completedDocs += 1
+    }
+  }
+
+  if (totalSegments > 0) return clamp(Math.round((completedSegments / totalSegments) * 100))
+  if (totalDocs > 0) return clamp(Math.round((completedDocs / totalDocs) * 100))
+  return null
+}
+
+const getStatusLabel = (status: string) => {
+  const map: Record<string, string> = {
+    PENDING: '排队中',
+    PARSING: '解析链接中',
+    DOWNLOADING: '下载中',
+    TRANSCRIBING: '转录中',
+    SUMMARIZING: '总结中',
+    FORMATTING: '格式化中',
+    SAVING: '保存中',
+    SUCCESS: '已完成',
+    FAILED: '失败',
+  }
+  return map[status] || status
+}
+
+const getTaskProgress = (task: any) => {
+  const p = task?.progress
+  if (typeof p === 'number' && Number.isFinite(p)) return clamp(Math.round(p))
+
+  const map: Record<string, number> = {
+    PENDING: 0,
+    PARSING: 5,
+    DOWNLOADING: 20,
+    TRANSCRIBING: 55,
+    SUMMARIZING: 85,
+    FORMATTING: 92,
+    SAVING: 97,
+    SUCCESS: 100,
+    FAILED: 0,
+  }
+  return clamp(map[task?.status] ?? 0)
+}
+
 const getDifyTag = (task: any) => {
   if (task?.dify_error) {
     return { text: '入库失败', className: 'bg-rose-50 text-rose-700 border-rose-200' }
+  }
+  if (task?.status === 'SUCCESS' && !task?.dify?.batch) {
+    // Grace period: note may be done while Dify upload is still in-flight.
+    return { text: '上传中', className: 'bg-sky-50 text-sky-700 border-sky-200' }
   }
   if (!task?.dify?.batch) return null
 
@@ -96,6 +169,15 @@ const NoteHistory: FC<NoteHistoryProps> = ({ onSelect, selectedId }) => {
       <div className="flex flex-col gap-2 overflow-hidden">
         {filteredTasks.map(task => {
           const difyTag = getDifyTag(task)
+          const isGenerating = task.status !== 'SUCCESS' && task.status !== 'FAILED'
+          const isUploading = task.status === 'SUCCESS' && !task.dify_error && !task?.dify?.batch
+          const isIndexing =
+            task.status === 'SUCCESS' &&
+            !task.dify_error &&
+            !!task?.dify?.batch &&
+            !isDifyIndexingCompleted(task?.dify_indexing)
+          const generationProgress = getTaskProgress(task)
+          const indexingProgress = getDifyIndexingProgress(task?.dify_indexing)
           return (
             <div
               key={task.id}
@@ -146,6 +228,44 @@ const NoteHistory: FC<NoteHistoryProps> = ({ onSelect, selectedId }) => {
                 </TooltipProvider>
               </div>
             </div>
+            {(isGenerating || isUploading || isIndexing) && (
+              <div className="mt-2">
+                <div className="flex items-center justify-between text-[10px] text-neutral-600 dark:text-neutral-300">
+                  <div className="line-clamp-1">
+                    {isGenerating && getStatusLabel(task.status)}
+                    {isUploading && '上传到知识库中'}
+                    {isIndexing && '入库中'}
+                  </div>
+                  <div className="tabular-nums">
+                    {isGenerating && `${generationProgress}%`}
+                    {isIndexing && (typeof indexingProgress === 'number' ? `${indexingProgress}%` : '…')}
+                    {isUploading && '…'}
+                  </div>
+                </div>
+                <div className="mt-1 h-1.5 w-full overflow-hidden rounded bg-neutral-200 dark:bg-neutral-800">
+                  {isGenerating ? (
+                    <div
+                      className="h-full rounded bg-primary transition-[width] duration-300"
+                      style={{ width: `${generationProgress}%` }}
+                    />
+                  ) : (
+                    <div
+                      className={cn(
+                        'h-full rounded bg-primary/80',
+                        typeof indexingProgress === 'number' && isIndexing
+                          ? 'transition-[width] duration-300'
+                          : 'w-1/3 animate-pulse'
+                      )}
+                      style={
+                        typeof indexingProgress === 'number' && isIndexing
+                          ? { width: `${indexingProgress}%` }
+                          : undefined
+                      }
+                    />
+                  )}
+                </div>
+              </div>
+            )}
             <div className={'mt-2 flex items-center justify-between text-[10px]'}>
               <div className="shrink-0 flex items-center gap-2">
                 {task.status === 'SUCCESS' && (

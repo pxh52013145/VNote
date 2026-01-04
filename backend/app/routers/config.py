@@ -29,6 +29,8 @@ class CookieUpdateRequest(BaseModel):
 class DifyConfigUpdateRequest(BaseModel):
     base_url: Optional[str] = None
     dataset_id: Optional[str] = None
+    note_dataset_id: Optional[str] = None
+    transcript_dataset_id: Optional[str] = None
     service_api_key: Optional[str] = None
     app_api_key: Optional[str] = None
     app_user: Optional[str] = None
@@ -38,6 +40,8 @@ class DifyConfigUpdateRequest(BaseModel):
     @field_validator(
         "base_url",
         "dataset_id",
+        "note_dataset_id",
+        "transcript_dataset_id",
         "service_api_key",
         "app_api_key",
         "app_user",
@@ -94,6 +98,8 @@ def get_dify_config():
         data={
             "base_url": cfg.base_url,
             "dataset_id": cfg.dataset_id,
+            "note_dataset_id": cfg.note_dataset_id,
+            "transcript_dataset_id": cfg.transcript_dataset_id,
             "indexing_technique": cfg.indexing_technique,
             "app_user": cfg.app_user,
             "timeout_seconds": cfg.timeout_seconds,
@@ -113,6 +119,10 @@ def update_dify_config(data: DifyConfigUpdateRequest):
         patch["base_url"] = data.base_url
     if data.dataset_id is not None:
         patch["dataset_id"] = data.dataset_id
+    if data.note_dataset_id is not None:
+        patch["note_dataset_id"] = data.note_dataset_id
+    if data.transcript_dataset_id is not None:
+        patch["transcript_dataset_id"] = data.transcript_dataset_id
     if data.service_api_key is not None:
         patch["service_api_key"] = data.service_api_key
     if data.app_api_key is not None:

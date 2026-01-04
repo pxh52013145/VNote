@@ -1,10 +1,66 @@
 import { useMemo } from 'react'
 
 import { useRagStore } from '@/store/ragStore'
+import { openExternalUrl } from '@/utils'
 
 const extractTimeRange = (text: string) => {
   const m = /TIME=([0-9:]{1,2}:[0-9]{2}(?::[0-9]{2})?-[0-9:]{1,2}:[0-9]{2}(?::[0-9]{2})?)/.exec(text)
   return m?.[1] ?? null
+}
+
+const extractSourceUrl = (text: string) => {
+  const m = /(?:^\[?SOURCE\]=)(.+)$/im.exec(text)
+  return m?.[1]?.trim() ?? null
+}
+
+const extractPlatformVideoId = (content: string, documentName: string) => {
+  const vid = /VID=([^\]]+)/i.exec(content)?.[1]?.trim()
+  const platform = /PLATFORM=([^\]]+)/i.exec(content)?.[1]?.trim()
+  if (vid && platform) return { platform, videoId: vid }
+
+  const m = /\[([^:\]]+):([^\]]+)\]\s*$/i.exec(documentName)
+  if (m?.[1] && m?.[2]) return { platform: m[1].trim(), videoId: m[2].trim() }
+
+  return null
+}
+
+const buildSourceUrlFallback = (platform: string, videoId: string) => {
+  const p = String(platform || '').toLowerCase()
+  const v = String(videoId || '').trim()
+  if (!v) return null
+
+  if (p === 'bilibili') return `https://www.bilibili.com/video/${v}`
+  return null
+}
+
+const parseTimestampSeconds = (value: string) => {
+  const parts = String(value || '')
+    .trim()
+    .split(':')
+    .map(v => Number(v))
+  if (parts.some(v => Number.isNaN(v))) return null
+  if (parts.length === 2) return parts[0] * 60 + parts[1]
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2]
+  return null
+}
+
+const buildJumpUrl = (sourceUrl: string, timeRange: string | null) => {
+  const raw = String(sourceUrl || '').trim()
+  if (!/^https?:\/\//i.test(raw)) return null
+
+  try {
+    const u = new URL(raw)
+    if (timeRange) {
+      const start = timeRange.split('-')[0]
+      const seconds = parseTimestampSeconds(start)
+      if (seconds != null) {
+        u.searchParams.set('t', String(seconds))
+      }
+    }
+    return u.toString()
+  } catch {
+    return raw
+  }
 }
 
 const stripSegmentTags = (text: string) => {
@@ -12,6 +68,12 @@ const stripSegmentTags = (text: string) => {
     .replace(/^\[?VID=[^\]]+\]\[PLATFORM=[^\]]+\]\[TIME=[^\]]+\]\s*/i, '')
     .replace(/^\[TIME=[^\]]+\]\s*/i, '')
     .trim()
+}
+
+const stripHeaderLines = (text: string) => {
+  const lines = String(text || '').split('\n')
+  const filtered = lines.filter(line => !/^\[?(TITLE|PLATFORM|VIDEO_ID|SOURCE)\]=/i.test(line.trim()))
+  return filtered.join('\n').trim()
 }
 
 const RagReferencesPanel = () => {
@@ -56,7 +118,11 @@ const RagReferencesPanel = () => {
           ) : (
             lastResources.map(r => {
               const time = extractTimeRange(r.content)
-              const snippet = stripSegmentTags(r.content)
+              const meta = extractPlatformVideoId(r.content, r.document_name)
+              const source =
+                extractSourceUrl(r.content) || (meta ? buildSourceUrlFallback(meta.platform, meta.videoId) : null)
+              const jumpUrl = source ? buildJumpUrl(source, time) : null
+              const snippet = stripHeaderLines(stripSegmentTags(r.content))
               return (
                 <div
                   key={r.segment_id}
@@ -71,12 +137,22 @@ const RagReferencesPanel = () => {
                       </div>
                     </div>
                     {time && (
-                      <span className="text-xs font-bold text-primary bg-primary-light px-2 py-1 rounded border border-slate-200 whitespace-nowrap">
+                      <button
+                        type="button"
+                        onClick={() => (jumpUrl ? openExternalUrl(jumpUrl) : undefined)}
+                        className={[
+                          'text-xs font-bold text-primary bg-primary-light px-2 py-1 rounded border border-slate-200 whitespace-nowrap',
+                          jumpUrl ? 'cursor-pointer hover:opacity-90' : 'cursor-default',
+                        ].join(' ')}
+                        title={jumpUrl ? '打开原片并跳转到该时间点' : undefined}
+                      >
                         {time}
-                      </span>
+                      </button>
                     )}
                   </div>
-                  <div className="mt-3 text-xs text-slate-600 leading-relaxed whitespace-pre-wrap">{snippet}</div>
+                  <div className="mt-3 text-xs text-slate-600 leading-relaxed whitespace-pre-wrap break-words">
+                    {snippet}
+                  </div>
                 </div>
               )
             })

@@ -3,6 +3,8 @@ import request from '@/utils/request'
 export interface DifyConfigPayload {
   base_url: string
   dataset_id: string
+  note_dataset_id?: string
+  transcript_dataset_id?: string
   indexing_technique: string
   app_user: string
   timeout_seconds: number
@@ -16,6 +18,8 @@ export interface DifyConfigPayload {
 export interface DifyConfigUpdateRequest {
   base_url?: string
   dataset_id?: string
+  note_dataset_id?: string
+  transcript_dataset_id?: string
   service_api_key?: string
   app_api_key?: string
   app_user?: string
@@ -30,4 +34,3 @@ export const getDifyConfig = async () => {
 export const updateDifyConfig = async (data: DifyConfigUpdateRequest) => {
   return (await request.post('/dify_config', data)) as DifyConfigPayload
 }
-

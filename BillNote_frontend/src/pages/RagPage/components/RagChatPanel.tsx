@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import toast from 'react-hot-toast'
 import { v4 as uuidv4 } from 'uuid'
-import { ChevronDown, Clock, MessageSquare, Plus, Send, X } from 'lucide-react'
+import { ChevronDown, Clock, Loader2, MessageSquare, Plus, Send, X } from 'lucide-react'
 
 import { ragChat } from '@/services/rag'
 import { useRagStore, type RagChatMessage } from '@/store/ragStore'
@@ -232,6 +232,21 @@ const RagChatPanel = () => {
               </div>
             )
           })
+        )}
+        {sending && (
+          <div className="flex gap-4 max-w-3xl mx-auto">
+            <div className="w-8 h-8 rounded-full bg-primary flex-shrink-0 flex items-center justify-center text-primary-foreground text-xs font-bold">
+              AI
+            </div>
+            <div className="space-y-2 w-full">
+              <div className="bg-white p-4 rounded-2xl rounded-tl-none border border-slate-200 shadow-sm text-slate-700 text-sm leading-relaxed">
+                <div className="flex items-center gap-2">
+                  <Loader2 className="w-4 h-4 animate-spin text-slate-400" />
+                  <span className="text-slate-500">正在检索知识库并生成回答…</span>
+                </div>
+              </div>
+            </div>
+          </div>
         )}
         <div ref={bottomRef} />
       </div>

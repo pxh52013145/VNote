@@ -18,12 +18,12 @@ export const HomePage: FC = () => {
   useEffect(() => {
     if (!currentTask) {
       setStatus('idle')
-    } else if (currentTask.status === 'PENDING') {
-      setStatus('loading')
     } else if (currentTask.status === 'SUCCESS') {
       setStatus('success')
     } else if (currentTask.status === 'FAILED') {
       setStatus('failed')
+    } else {
+      setStatus('loading')
     }
   }, [currentTask])
 

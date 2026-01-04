@@ -2,6 +2,7 @@ import re
 import os
 from collections import defaultdict
 from typing import Any, Iterable
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from app.models.audio_model import AudioDownloadResult
 from app.models.transcriber_model import TranscriptResult
@@ -15,6 +16,43 @@ def _format_timestamp(seconds: float) -> str:
     if hours > 0:
         return f"{hours:02d}:{minutes:02d}:{secs:02d}"
     return f"{minutes:02d}:{secs:02d}"
+
+
+_DROP_SOURCE_QUERY_KEYS = {
+    "vd_source",
+    "spm_id_from",
+    "from",
+    "share_source",
+    "share_medium",
+    "share_plat",
+    "share_session_id",
+    "share_tag",
+}
+
+
+def _normalize_source_url(url: str) -> str:
+    raw = (url or "").strip()
+    if not raw:
+        return ""
+
+    try:
+        parts = urlsplit(raw)
+    except Exception:
+        return raw
+
+    if parts.scheme not in ("http", "https"):
+        return raw
+
+    pairs = []
+    for k, v in parse_qsl(parts.query, keep_blank_values=True):
+        if not k:
+            continue
+        if k in _DROP_SOURCE_QUERY_KEYS or k.lower().startswith("utm_"):
+            continue
+        pairs.append((k, v))
+
+    query = urlencode(pairs, doseq=True)
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, query, ""))
 
 
 def _merge_transcript_segments_by_chars(
@@ -80,6 +118,31 @@ def build_rag_document_name(audio: AudioDownloadResult, platform: str) -> str:
     return f"{safe_title} [{platform}:{safe_video_id}]"
 
 
+def build_rag_note_document_text(
+    *,
+    audio: AudioDownloadResult,
+    platform: str,
+    source_url: str,
+    note_markdown: str,
+) -> str:
+    normalized_source = _normalize_source_url(source_url)
+    header = [
+        f"[TITLE]={audio.title}",
+        f"[PLATFORM]={platform}",
+        f"[VIDEO_ID]={audio.video_id}",
+        f"[SOURCE]={normalized_source}",
+        "",
+    ]
+
+    md = (note_markdown or "").strip()
+    parts: list[str] = []
+    parts.extend(header)
+    if md:
+        parts.append(md)
+        parts.append("")
+    return "\n".join(parts).strip() + "\n"
+
+
 def build_rag_document_text(
     *,
     audio: AudioDownloadResult,
@@ -87,11 +150,12 @@ def build_rag_document_text(
     platform: str,
     source_url: str,
 ) -> str:
+    normalized_source = _normalize_source_url(source_url)
     header = [
         f"[TITLE]={audio.title}",
         f"[PLATFORM]={platform}",
         f"[VIDEO_ID]={audio.video_id}",
-        f"[SOURCE]={source_url}",
+        f"[SOURCE]={normalized_source}",
         "",
     ]
 
@@ -132,11 +196,12 @@ def build_rag_document_text_with_note(
     source_url: str,
     note_markdown: str,
 ) -> str:
+    normalized_source = _normalize_source_url(source_url)
     header = [
         f"[TITLE]={audio.title}",
         f"[PLATFORM]={platform}",
         f"[VIDEO_ID]={audio.video_id}",
-        f"[SOURCE]={source_url}",
+        f"[SOURCE]={normalized_source}",
         "",
     ]
 

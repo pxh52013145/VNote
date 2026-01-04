@@ -81,6 +81,8 @@ class DifyConfigManager:
         return {
             "base_url": data.get("base_url") or "",
             "dataset_id": data.get("dataset_id") or "",
+            "note_dataset_id": data.get("note_dataset_id") or "",
+            "transcript_dataset_id": data.get("transcript_dataset_id") or "",
             "indexing_technique": data.get("indexing_technique") or "",
             "app_user": data.get("app_user") or "",
             "timeout_seconds": data.get("timeout_seconds"),
@@ -90,4 +92,3 @@ class DifyConfigManager:
             "app_api_key_masked": _mask_secret(app_key),
             "config_path": str(self.path),
         }
-

@@ -16,6 +16,8 @@ class DifyError(RuntimeError):
 class DifyConfig:
     base_url: str
     dataset_id: str
+    note_dataset_id: str
+    transcript_dataset_id: str
     service_api_key: Optional[str]
     app_api_key: Optional[str]
     app_user: str
@@ -27,6 +29,8 @@ class DifyConfig:
         # Defaults come from env/.env, but can be overridden by the persisted UI config.
         base_url = os.getenv("DIFY_BASE_URL", "http://localhost").strip() or "http://localhost"
         dataset_id = os.getenv("DIFY_DATASET_ID", "").strip()
+        note_dataset_id = os.getenv("DIFY_NOTE_DATASET_ID", "").strip()
+        transcript_dataset_id = os.getenv("DIFY_TRANSCRIPT_DATASET_ID", "").strip()
         service_api_key = os.getenv("DIFY_SERVICE_API_KEY")
         app_api_key = os.getenv("DIFY_APP_API_KEY")
         app_user = os.getenv("DIFY_APP_USER", "bilinote").strip() or "bilinote"
@@ -42,6 +46,14 @@ class DifyConfig:
             p_dataset_id = str(persisted.get("dataset_id") or "").strip()
             if p_dataset_id:
                 dataset_id = p_dataset_id
+
+            p_note_dataset_id = str(persisted.get("note_dataset_id") or "").strip()
+            if p_note_dataset_id:
+                note_dataset_id = p_note_dataset_id
+
+            p_transcript_dataset_id = str(persisted.get("transcript_dataset_id") or "").strip()
+            if p_transcript_dataset_id:
+                transcript_dataset_id = p_transcript_dataset_id
 
             p_service_key = str(persisted.get("service_api_key") or "").strip()
             if p_service_key:
@@ -67,13 +79,21 @@ class DifyConfig:
                     pass
 
         # Allow copying from paths like: "datasets/<uuid>" or "/datasets/<uuid>"
-        dataset_id = dataset_id.lstrip("/")
-        if dataset_id.startswith("datasets/"):
-            dataset_id = dataset_id.split("/", 1)[1].strip()
+        def _normalize_dataset_id(value: str) -> str:
+            v = (value or "").strip().lstrip("/")
+            if v.startswith("datasets/"):
+                v = v.split("/", 1)[1].strip()
+            return v
+
+        dataset_id = _normalize_dataset_id(dataset_id)
+        note_dataset_id = _normalize_dataset_id(note_dataset_id)
+        transcript_dataset_id = _normalize_dataset_id(transcript_dataset_id)
 
         return DifyConfig(
             base_url=base_url,
             dataset_id=dataset_id,
+            note_dataset_id=note_dataset_id,
+            transcript_dataset_id=transcript_dataset_id,
             service_api_key=service_api_key.strip() if service_api_key else None,
             app_api_key=app_api_key.strip() if app_api_key else None,
             app_user=app_user,
@@ -139,12 +159,14 @@ class DifyKnowledgeClient:
     def create_document_by_text(
         self,
         *,
+        dataset_id: Optional[str] = None,
         name: str,
         text: str,
         doc_language: str = "Chinese Simplified",
     ) -> dict[str, Any]:
-        if not self._config.dataset_id:
-            raise DifyError("Missing DIFY_DATASET_ID")
+        dataset = (dataset_id or self._config.dataset_id).strip() if (dataset_id or self._config.dataset_id) else ""
+        if not dataset:
+            raise DifyError("Missing Dify dataset id (set DIFY_DATASET_ID or per-call dataset_id)")
         if not self._config.service_api_key:
             raise DifyError("Missing DIFY_SERVICE_API_KEY")
 
@@ -157,20 +179,21 @@ class DifyKnowledgeClient:
         }
         return self._http._request(
             "POST",
-            f"/datasets/{self._config.dataset_id}/document/create-by-text",
+            f"/datasets/{dataset}/document/create-by-text",
             api_key=self._config.service_api_key,
             json=payload,
         )
 
-    def get_batch_indexing_status(self, *, batch: str) -> dict[str, Any]:
-        if not self._config.dataset_id:
-            raise DifyError("Missing DIFY_DATASET_ID")
+    def get_batch_indexing_status(self, *, batch: str, dataset_id: Optional[str] = None) -> dict[str, Any]:
+        dataset = (dataset_id or self._config.dataset_id).strip() if (dataset_id or self._config.dataset_id) else ""
+        if not dataset:
+            raise DifyError("Missing Dify dataset id (set DIFY_DATASET_ID or per-call dataset_id)")
         if not self._config.service_api_key:
             raise DifyError("Missing DIFY_SERVICE_API_KEY")
 
         return self._http._request(
             "GET",
-            f"/datasets/{self._config.dataset_id}/documents/{batch}/indexing-status",
+            f"/datasets/{dataset}/documents/{batch}/indexing-status",
             api_key=self._config.service_api_key,
         )
 

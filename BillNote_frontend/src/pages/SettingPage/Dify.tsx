@@ -39,6 +39,8 @@ const DifySchema = z.object({
       }
     }, 'Base URL 必须是合法的 http/https URL'),
   datasetId: z.string().trim().min(1, '请填写 Dataset ID（UUID）'),
+  transcriptDatasetId: z.string().trim().optional(),
+  noteDatasetId: z.string().trim().optional(),
   serviceApiKey: z.string().trim().optional(),
   appApiKey: z.string().trim().optional(),
   appUser: z.string().trim().min(1, '请填写 user（任意稳定字符串即可）'),
@@ -63,6 +65,8 @@ const DifySetting = () => {
     defaultValues: {
       baseUrl: 'http://localhost',
       datasetId: '',
+      transcriptDatasetId: '',
+      noteDatasetId: '',
       serviceApiKey: '',
       appApiKey: '',
       appUser: 'bilinote',
@@ -78,6 +82,8 @@ const DifySetting = () => {
         form.reset({
           baseUrl: cfg.base_url || 'http://localhost',
           datasetId: cfg.dataset_id || '',
+          transcriptDatasetId: cfg.transcript_dataset_id || '',
+          noteDatasetId: cfg.note_dataset_id || '',
           serviceApiKey: '',
           appApiKey: '',
           appUser: cfg.app_user || 'bilinote',
@@ -102,6 +108,8 @@ const DifySetting = () => {
       const patch: DifyConfigUpdateRequest = {
         base_url: values.baseUrl,
         dataset_id: values.datasetId,
+        transcript_dataset_id: values.transcriptDatasetId || '',
+        note_dataset_id: values.noteDatasetId || '',
         app_user: values.appUser,
         indexing_technique: values.indexingTechnique,
         timeout_seconds: values.timeoutSeconds,
@@ -172,6 +180,38 @@ const DifySetting = () => {
                   </FormItem>
                 )}
               />
+
+              <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
+                <FormField
+                  control={form.control}
+                  name="transcriptDatasetId"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Transcript Dataset ID（可选）</FormLabel>
+                      <FormControl>
+                        <Input {...field} placeholder="6de4f7f8-50a6-4e94-aaeb-e5676e543e4a" />
+                      </FormControl>
+                      <FormDescription>留空则使用上方 Dataset ID</FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name="noteDatasetId"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Note Dataset ID（可选）</FormLabel>
+                      <FormControl>
+                        <Input {...field} placeholder="c6bb1a44-df05-4447-97d1-a782fba93455" />
+                      </FormControl>
+                      <FormDescription>留空则使用上方 Dataset ID</FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
 
               <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
                 <FormField

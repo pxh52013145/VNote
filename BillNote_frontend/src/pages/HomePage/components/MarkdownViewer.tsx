@@ -38,12 +38,46 @@ interface MarkdownViewerProps {
 }
 
 const steps = [
+  { label: '排队', key: 'PENDING' },
   { label: '解析链接', key: 'PARSING' },
   { label: '下载音频', key: 'DOWNLOADING' },
   { label: '转写文字', key: 'TRANSCRIBING' },
   { label: '总结内容', key: 'SUMMARIZING' },
-  { label: '保存完成', key: 'SUCCESS' },
+  { label: '格式化', key: 'FORMATTING' },
+  { label: '保存', key: 'SAVING' },
+  { label: '完成', key: 'SUCCESS' },
 ]
+
+const getStatusLabel = (status: string) => {
+  const map: Record<string, string> = {
+    PENDING: '排队中',
+    PARSING: '解析链接中',
+    DOWNLOADING: '下载中',
+    TRANSCRIBING: '转录中',
+    SUMMARIZING: '总结中',
+    FORMATTING: '格式化中',
+    SAVING: '保存中',
+    SUCCESS: '已完成',
+    FAILED: '失败',
+  }
+  return map[status] || status
+}
+
+const getStatusProgress = (status: string) => {
+  const map: Record<string, number> = {
+    PENDING: 0,
+    PARSING: 5,
+    DOWNLOADING: 20,
+    TRANSCRIBING: 55,
+    SUMMARIZING: 85,
+    FORMATTING: 92,
+    SAVING: 97,
+    SUCCESS: 100,
+    FAILED: 0,
+  }
+  const v = map[status] ?? 0
+  return Math.max(0, Math.min(100, Math.round(v)))
+}
 
 const MarkdownViewer: FC<MarkdownViewerProps> = ({ status }) => {
   const [copied, setCopied] = useState(false)
@@ -57,6 +91,10 @@ const MarkdownViewer: FC<MarkdownViewerProps> = ({ status }) => {
   const getCurrentTask = useTaskStore.getState().getCurrentTask
   const currentTask = useTaskStore(state => state.getCurrentTask())
   const taskStatus = currentTask?.status || 'PENDING'
+  const taskProgress =
+    typeof currentTask?.progress === 'number' && Number.isFinite(currentTask.progress)
+      ? Math.max(0, Math.min(100, Math.round(currentTask.progress)))
+      : getStatusProgress(taskStatus)
   const retryTask = useTaskStore.getState().retryTask
   const isMultiVersion = Array.isArray(currentTask?.markdown)
   const [showTranscribe, setShowTranscribe] = useState(false)
@@ -146,6 +184,18 @@ const MarkdownViewer: FC<MarkdownViewerProps> = ({ status }) => {
     return (
       <div className="flex h-full w-full flex-col items-center justify-center space-y-4 text-neutral-500">
         <StepBar steps={steps} currentStep={taskStatus} />
+        <div className="w-full max-w-md px-6">
+          <div className="flex items-center justify-between text-xs text-neutral-600 dark:text-neutral-300">
+            <span className="line-clamp-1">{getStatusLabel(taskStatus)}</span>
+            <span className="tabular-nums">{taskProgress}%</span>
+          </div>
+          <div className="mt-1 h-2 w-full overflow-hidden rounded bg-neutral-200 dark:bg-neutral-800">
+            <div
+              className="h-full bg-primary transition-[width] duration-300"
+              style={{ width: `${taskProgress}%` }}
+            />
+          </div>
+        </div>
         <Loading className="h-5 w-5" />
         <div className="text-center text-sm">
           <p className="text-lg font-bold">正在生成笔记，请稍候…</p>

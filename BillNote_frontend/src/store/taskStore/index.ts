@@ -53,12 +53,24 @@ export interface Task {
   markdown: string|Markdown [] //为了兼容之前的笔记
   transcript: Transcript
   status: TaskStatus
+  progress?: number
+  message?: string
   audioMeta: AudioMeta
   dify?: {
     base_url?: string
     dataset_id?: string
     document_id?: string
     batch?: string
+    transcript?: {
+      dataset_id?: string
+      document_id?: string
+      batch?: string
+    }
+    note?: {
+      dataset_id?: string
+      document_id?: string
+      batch?: string
+    }
   }
   dify_indexing?: any
   dify_error?: string
@@ -106,6 +118,7 @@ export const useTaskStore = create<TaskStore>()(
               formData: formData,
               id: taskId,
               status: 'PENDING',
+              progress: 0,
               markdown: '',
               platform: platform,
               transcript: {

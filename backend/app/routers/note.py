@@ -18,7 +18,11 @@ from app.enmus.task_status_enums import TaskStatus
 from app.exceptions.note import NoteError
 from app.services.dify_client import DifyConfig, DifyError, DifyKnowledgeClient
 from app.services.note import NoteGenerator, logger
-from app.services.rag_service import build_rag_document_name, build_rag_document_text_with_note
+from app.services.rag_service import (
+    build_rag_document_name,
+    build_rag_document_text,
+    build_rag_note_document_text,
+)
 from app.utils.response import ResponseWrapper as R
 from app.utils.url_parser import extract_video_id
 from app.validators.video_url_validator import is_supported_video_url
@@ -131,36 +135,89 @@ def run_note_task(task_id: str, video_url: str, platform: str, quality: Download
     # Always save note results locally first.
     save_note_to_file(task_id, note)
 
-    # Upload note + transcript to Dify Knowledge Base for RAG.
+    # Upload transcript + note to Dify Knowledge Base for RAG (separate datasets).
     try:
         dify_cfg = DifyConfig.from_env()
         client = DifyKnowledgeClient(dify_cfg)
         try:
-            doc_name = build_rag_document_name(note.audio_meta, platform)
-            doc_text = build_rag_document_text_with_note(
-                audio=note.audio_meta,
-                transcript=note.transcript,
-                platform=platform,
-                source_url=video_url,
-                note_markdown=note.markdown,
-            )
-            resp = client.create_document_by_text(name=doc_name, text=doc_text, doc_language="Chinese Simplified")
+            base_name = build_rag_document_name(note.audio_meta, platform)
+            transcript_dataset_id = (dify_cfg.transcript_dataset_id or dify_cfg.dataset_id).strip()
+            note_dataset_id = (dify_cfg.note_dataset_id or dify_cfg.dataset_id).strip()
+
+            dify_info: dict[str, Any] = {
+                "base_url": dify_cfg.base_url,
+                "transcript": None,
+                "note": None,
+            }
+            dify_errors: dict[str, str] = {}
+
+            if transcript_dataset_id:
+                try:
+                    transcript_name = f"{base_name} (transcript)"
+                    transcript_text = build_rag_document_text(
+                        audio=note.audio_meta,
+                        transcript=note.transcript,
+                        platform=platform,
+                        source_url=video_url,
+                    )
+                    resp_transcript = client.create_document_by_text(
+                        dataset_id=transcript_dataset_id,
+                        name=transcript_name,
+                        text=transcript_text,
+                        doc_language="Chinese Simplified",
+                    )
+                    doc_transcript = resp_transcript.get("document") or {}
+                    dify_info["transcript"] = {
+                        "dataset_id": transcript_dataset_id,
+                        "document_id": doc_transcript.get("id"),
+                        "batch": resp_transcript.get("batch"),
+                    }
+                    # Backward-compatible primary fields (use transcript).
+                    dify_info["dataset_id"] = transcript_dataset_id
+                    dify_info["document_id"] = doc_transcript.get("id")
+                    dify_info["batch"] = resp_transcript.get("batch")
+                except DifyError as exc:
+                    dify_errors["transcript"] = str(exc)
+            else:
+                dify_errors["transcript"] = "Missing transcript dataset id"
+
+            if note_dataset_id:
+                try:
+                    note_name = f"{base_name} (note)"
+                    note_text = build_rag_note_document_text(
+                        audio=note.audio_meta,
+                        platform=platform,
+                        source_url=video_url,
+                        note_markdown=note.markdown,
+                    )
+                    resp_note = client.create_document_by_text(
+                        dataset_id=note_dataset_id,
+                        name=note_name,
+                        text=note_text,
+                        doc_language="Chinese Simplified",
+                    )
+                    doc_note = resp_note.get("document") or {}
+                    dify_info["note"] = {
+                        "dataset_id": note_dataset_id,
+                        "document_id": doc_note.get("id"),
+                        "batch": resp_note.get("batch"),
+                    }
+                except DifyError as exc:
+                    dify_errors["note"] = str(exc)
+            else:
+                dify_errors["note"] = "Missing note dataset id"
         finally:
             client.close()
-
-        document = resp.get("document") or {}
-        dify_info = {
-            "base_url": dify_cfg.base_url,
-            "dataset_id": dify_cfg.dataset_id,
-            "document_id": document.get("id"),
-            "batch": resp.get("batch"),
-        }
 
         result_path = Path(NOTE_OUTPUT_DIR) / f"{task_id}.json"
         status_path = Path(NOTE_OUTPUT_DIR) / f"{task_id}.status.json"
         _atomic_merge_json_file(result_path, {"dify": dify_info})
         _atomic_merge_json_file(status_path, {"dify": dify_info})
-        logger.info(f"Uploaded to Dify (task_id={task_id}, document_id={dify_info.get('document_id')})")
+        if dify_errors:
+            _atomic_merge_json_file(status_path, {"dify_error": json.dumps(dify_errors, ensure_ascii=False)})
+            logger.error(f"Dify upload partially failed (task_id={task_id}): {dify_errors}")
+        else:
+            logger.info(f"Uploaded to Dify (task_id={task_id})")
     except DifyError as exc:
         status_path = Path(NOTE_OUTPUT_DIR) / f"{task_id}.status.json"
         _atomic_merge_json_file(status_path, {"dify_error": str(exc)})
@@ -239,6 +296,10 @@ def get_task_status(task_id: str):
         message = status_content.get("message", "")
         dify_info = status_content.get("dify")
         dify_error = status_content.get("dify_error")
+        progress = status_content.get("progress")
+        if not isinstance(progress, (int, float)):
+            progress = TaskStatus.progress(status)
+        progress = max(0, min(100, int(progress)))
 
         if status == TaskStatus.SUCCESS.value:
             # 成功状态的话，继续读取最终笔记内容
@@ -249,18 +310,51 @@ def get_task_status(task_id: str):
                 # If we have a Dify batch id, attach real-time indexing status.
                 dify_info = dify_info or result_content.get("dify")
                 dify_indexing = None
-                if isinstance(dify_info, dict) and dify_info.get("batch"):
+                if isinstance(dify_info, dict):
                     try:
                         dify_cfg = DifyConfig.from_env()
                         dify_client = DifyKnowledgeClient(dify_cfg)
                         try:
-                            dify_indexing = dify_client.get_batch_indexing_status(batch=str(dify_info["batch"]))
+                            merged_data: list[Any] = []
+                            per_dataset: dict[str, Any] = {}
+
+                            for key in ("transcript", "note"):
+                                info = dify_info.get(key)
+                                if not isinstance(info, dict):
+                                    continue
+                                batch = info.get("batch")
+                                dataset_id = info.get("dataset_id")
+                                if not batch or not dataset_id:
+                                    continue
+                                payload = dify_client.get_batch_indexing_status(
+                                    batch=str(batch),
+                                    dataset_id=str(dataset_id),
+                                )
+                                per_dataset[key] = payload
+                                data_list = payload.get("data")
+                                if isinstance(data_list, list):
+                                    merged_data.extend(data_list)
+
+                            # Backward-compatible: if no per-dataset info, fall back to legacy fields.
+                            if not per_dataset and dify_info.get("batch"):
+                                payload = dify_client.get_batch_indexing_status(
+                                    batch=str(dify_info["batch"]),
+                                    dataset_id=str(dify_info.get("dataset_id") or ""),
+                                )
+                                per_dataset["primary"] = payload
+                                data_list = payload.get("data")
+                                if isinstance(data_list, list):
+                                    merged_data.extend(data_list)
+
+                            if per_dataset:
+                                dify_indexing = {**per_dataset, "data": merged_data}
                         finally:
                             dify_client.close()
                     except Exception as exc:
                         dify_error = dify_error or str(exc)
                 return R.success({
                     "status": status,
+                    "progress": progress,
                     "result": result_content,
                     "message": message,
                     "dify": dify_info,
@@ -272,6 +366,7 @@ def get_task_status(task_id: str):
                 # 理论上不会出现，保险处理
                 return R.success({
                     "status": TaskStatus.PENDING.value,
+                    "progress": progress,
                     "message": "任务完成，但结果文件未找到",
                     "task_id": task_id
                 })
@@ -282,6 +377,7 @@ def get_task_status(task_id: str):
         # 处理中状态
         return R.success({
             "status": status,
+            "progress": progress,
             "message": message,
             "dify": dify_info,
             "dify_error": dify_error,
@@ -294,6 +390,7 @@ def get_task_status(task_id: str):
             result_content = json.load(f)
         return R.success({
             "status": TaskStatus.SUCCESS.value,
+            "progress": 100,
             "result": result_content,
             "dify": result_content.get("dify"),
             "task_id": task_id
@@ -302,6 +399,7 @@ def get_task_status(task_id: str):
     # 什么都没有，默认PENDING
     return R.success({
         "status": TaskStatus.PENDING.value,
+        "progress": 0,
         "message": "任务排队中",
         "task_id": task_id
     })

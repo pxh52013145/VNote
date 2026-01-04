@@ -43,6 +43,8 @@ export const useTaskPolling = (interval = 3000) => {
 
           const patch = {
             status,
+            progress: res?.progress,
+            message: res?.message,
             dify: res.dify,
             dify_indexing: res.dify_indexing,
             dify_error: res.dify_error,
