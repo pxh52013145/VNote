@@ -12,6 +12,9 @@ lerna-debug.log*
 dify_*.txt
 snapshot_*.txt
 dify_add_model.png
+
+# Local Dify workflow screenshots (not required to run)
+dify_workflow*.png
 backend_run.*
 ~$*.docx
 project.docx
