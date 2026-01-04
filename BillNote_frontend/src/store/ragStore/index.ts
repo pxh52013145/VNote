@@ -123,6 +123,14 @@ export const useRagStore = create<RagStore>()((set, get) => ({
       const conversations = pickConversation(state?.conversations)
       const currentConversationId =
         state?.current_conversation_id || (conversations.length > 0 ? conversations[0].id : null)
+      const currentConversation = currentConversationId
+        ? conversations.find(c => c.id === currentConversationId) || null
+        : null
+      const shouldStartNewConversationOnBoot = !!(
+        currentConversation &&
+        Array.isArray(currentConversation.messages) &&
+        currentConversation.messages.length > 0
+      )
       set({
         userId: String(state?.user_id || ''),
         conversations,
@@ -130,6 +138,12 @@ export const useRagStore = create<RagStore>()((set, get) => ({
         initialized: true,
         initializing: false,
       })
+
+      // If the last opened conversation already has messages, start with a fresh one on app restart.
+      // This keeps history, but avoids showing "last session state" as the active chat.
+      if (shouldStartNewConversationOnBoot) {
+        get().createConversation()
+      }
     } catch (e) {
       console.error('Failed to bootstrap RAG history:', e)
       set({ initialized: true, initializing: false })
