@@ -12,8 +12,8 @@ import { type FieldErrors, useFieldArray, useForm, useWatch } from 'react-hook-f
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 
-import { CheckCircle2, Info, Loader2, PauseCircle, Plus, X, XCircle } from 'lucide-react'
-import { Alert } from 'antd'
+import { CheckCircle2, Info, Loader2, PauseCircle, Plus, SlidersHorizontal, X, XCircle } from 'lucide-react'
+import { Alert, Popover } from 'antd'
 import toast from 'react-hot-toast'
 import { generateNote } from '@/services/note.ts'
 import { uploadFile } from '@/services/upload.ts'
@@ -250,6 +250,7 @@ const NoteForm = () => {
   const [batchItems, setBatchItems] = useState<BatchItem[]>([])
   const [batchRunning, setBatchRunning] = useState(false)
   const [stopAfterCurrent, setStopAfterCurrent] = useState(false)
+  const [advancedOpen, setAdvancedOpen] = useState(false)
   const stopAfterCurrentRef = useRef(false)
   useEffect(() => {
     stopAfterCurrentRef.current = stopAfterCurrent
@@ -877,113 +878,147 @@ const NoteForm = () => {
               )}
             />
           </div>
-          {/* 视频理解 */}
-          <SectionHeader title="视频理解" tip="将视频截图发给多模态模型辅助分析" />
-          <div className="flex flex-col gap-2">
-            <FormField
-              control={form.control}
-              name="video_understanding"
-              render={({ field }) => (
-                <FormItem>
-                  <div className="flex items-center gap-2">
-                    <FormLabel>启用</FormLabel>
-                    <Checkbox
-                      checked={videoUnderstandingEnabled}
-                      onCheckedChange={v => form.setValue('video_understanding', v)}
-                    />
-                  </div>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
 
-            <div className="grid grid-cols-2 gap-4">
-              {/* 采样间隔 */}
-              <FormField
-                control={form.control}
-                name="video_interval"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>采样间隔（秒）</FormLabel>
-                    <Input disabled={!videoUnderstandingEnabled} type="number" {...field} />
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              {/* 拼图大小 */}
-              <FormField
-                control={form.control}
-                name="grid_size"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>拼图尺寸（列 × 行）</FormLabel>
-                    <div className="flex items-center space-x-2">
-                      <Input
-                        disabled={!videoUnderstandingEnabled}
-                        type="number"
-                        value={field.value?.[0] || 3}
-                        onChange={e => field.onChange([+e.target.value, field.value?.[1] || 3])}
-                        className="w-16"
-                      />
-                      <span>x</span>
-                      <Input
-                        disabled={!videoUnderstandingEnabled}
-                        type="number"
-                        value={field.value?.[1] || 3}
-                        onChange={e => field.onChange([field.value?.[0] || 3, +e.target.value])}
-                        className="w-16"
+          <Popover
+            trigger="click"
+            placement="top"
+            open={advancedOpen}
+            onOpenChange={setAdvancedOpen}
+            content={
+              <div className="w-[380px] max-w-[calc(100vw-2rem)]">
+                <div className="mb-2 flex items-center justify-between">
+                  <div className="text-sm font-semibold text-slate-800">高级设置</div>
+                  <Button type="button" variant="ghost" size="sm" onClick={() => setAdvancedOpen(false)}>
+                    关闭
+                  </Button>
+                </div>
+
+                <ScrollArea className="max-h-[60vh] pr-3">
+                  <div className="space-y-5 pb-2">
+                    {/* 视频理解 */}
+                    <div className="rounded-lg border border-slate-200 bg-white p-4">
+                      <SectionHeader title="视频理解" tip="将视频截图发给多模态模型辅助分析" />
+                      <div className="flex flex-col gap-2">
+                        <FormField
+                          control={form.control}
+                          name="video_understanding"
+                          render={({ field }) => (
+                            <FormItem>
+                              <div className="flex items-center justify-between gap-2">
+                                <FormLabel className="text-sm">启用</FormLabel>
+                                <Checkbox
+                                  checked={videoUnderstandingEnabled}
+                                  onCheckedChange={v =>
+                                    form.setValue('video_understanding', Boolean(v), { shouldDirty: true })
+                                  }
+                                />
+                              </div>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+
+                        {videoUnderstandingEnabled && (
+                          <div className="grid grid-cols-2 gap-4">
+                            {/* 采样间隔 */}
+                            <FormField
+                              control={form.control}
+                              name="video_interval"
+                              render={({ field }) => (
+                                <FormItem>
+                                  <FormLabel>采样间隔（秒）</FormLabel>
+                                  <Input type="number" {...field} />
+                                  <FormMessage />
+                                </FormItem>
+                              )}
+                            />
+                            {/* 拼图大小 */}
+                            <FormField
+                              control={form.control}
+                              name="grid_size"
+                              render={({ field }) => (
+                                <FormItem>
+                                  <FormLabel>拼图尺寸（列 × 行）</FormLabel>
+                                  <div className="flex items-center space-x-2">
+                                    <Input
+                                      type="number"
+                                      value={field.value?.[0] || 3}
+                                      onChange={e => field.onChange([+e.target.value, field.value?.[1] || 3])}
+                                      className="w-16"
+                                    />
+                                    <span>x</span>
+                                    <Input
+                                      type="number"
+                                      value={field.value?.[1] || 3}
+                                      onChange={e => field.onChange([field.value?.[0] || 3, +e.target.value])}
+                                      className="w-16"
+                                    />
+                                  </div>
+                                  <FormMessage />
+                                </FormItem>
+                              )}
+                            />
+                          </div>
+                        )}
+
+                        <Alert
+                          type="warning"
+                          showIcon
+                          message="提示：视频理解功能需要多模态模型"
+                          className="text-sm"
+                        />
+                      </div>
+                    </div>
+
+                    {/* 笔记格式 */}
+                    <div className="rounded-lg border border-slate-200 bg-white p-4">
+                      <FormField
+                        control={form.control}
+                        name="format"
+                        render={({ field }) => (
+                          <FormItem>
+                            <SectionHeader title="笔记格式" tip="选择要包含的笔记元素" />
+                            <CheckboxGroup
+                              value={field.value}
+                              onChange={field.onChange}
+                              disabledMap={{
+                                link: platform === 'local',
+                                screenshot: !videoUnderstandingEnabled,
+                              }}
+                            />
+                            <FormMessage />
+                          </FormItem>
+                        )}
                       />
                     </div>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-            </div>
-            <Alert
-              closable
-              type="error"
-              message={
-                <div>
-                  <strong>提示：</strong>
-                  <p>视频理解功能必须使用多模态模型。</p>
-                </div>
-              }
-              className="text-sm"
-            />
-          </div>
 
-          {/* 笔记格式 */}
-          <FormField
-            control={form.control}
-            name="format"
-            render={({ field }) => (
-              <FormItem>
-                <SectionHeader title="笔记格式" tip="选择要包含的笔记元素" />
-                <CheckboxGroup
-                  value={field.value}
-                  onChange={field.onChange}
-                  disabledMap={{
-                    link: platform === 'local',
-                    screenshot: !videoUnderstandingEnabled,
-                  }}
-                />
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-
-          {/* 备注 */}
-          <FormField
-            control={form.control}
-            name="extras"
-            render={({ field }) => (
-              <FormItem>
-                <SectionHeader title="备注" tip="可在 Prompt 结尾附加自定义说明" />
-                <Textarea placeholder="笔记需要罗列出 xxx 关键点…" {...field} />
-                <FormMessage />
-              </FormItem>
-            )}
-          />
+                    {/* 备注 */}
+                    <div className="rounded-lg border border-slate-200 bg-white p-4">
+                      <FormField
+                        control={form.control}
+                        name="extras"
+                        render={({ field }) => (
+                          <FormItem>
+                            <SectionHeader title="备注" tip="可在 Prompt 结尾附加自定义说明" />
+                            <Textarea placeholder="笔记需要罗列出 xxx 关键点…" {...field} />
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                    </div>
+                  </div>
+                </ScrollArea>
+              </div>
+            }
+          >
+            <Button type="button" variant="outline" className="w-full justify-between">
+              <span className="inline-flex items-center gap-2">
+                <SlidersHorizontal className="h-4 w-4" />
+                更多设置
+              </span>
+              <span className="text-xs text-slate-500">配置视频理解 / 格式 / 备注</span>
+            </Button>
+          </Popover>
         </form>
       </Form>
     </div>
