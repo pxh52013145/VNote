@@ -32,6 +32,7 @@ function App() {
     if (initialized) {
       // Always start with a fresh ingest form (no task selected) after app restart.
       useTaskStore.getState().setCurrentTask(null)
+      useTaskStore.getState().setIngestTask(null)
       systemCheck()
     }
   }, [initialized])

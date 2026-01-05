@@ -3,7 +3,7 @@ from faster_whisper import WhisperModel
 from app.decorators.timeit import timeit
 from app.models.transcriber_model import TranscriptSegment, TranscriptResult
 from app.transcriber.base import Transcriber
-from app.utils.env_checker import is_cuda_available, is_torch_installed
+from app.utils.env_checker import is_cuda_available
 from app.utils.logger import get_logger
 from app.utils.path_helper import get_model_dir
 
@@ -44,7 +44,9 @@ class WhisperTranscriber(Transcriber):
         else:
             self.device = "cuda" if self.is_cuda() else "cpu"
             if device == 'cuda' and self.device == 'cpu':
-                print('没有 cuda 使用 cpu进行计算')
+                logger.info('未检测到可用 CUDA，使用 CPU 进行计算')
+            elif self.device == 'cuda':
+                logger.info('检测到可用 CUDA，使用 GPU 进行计算')
 
         self.compute_type = compute_type or ("float16" if self.device == "cuda" else "int8")
 
@@ -67,28 +69,8 @@ class WhisperTranscriber(Transcriber):
             download_root=model_dir
         )
     @staticmethod
-    def is_torch_installed() -> bool:
-        try:
-            import torch
-            return True
-        except ImportError:
-            return False
-
-    @staticmethod
     def is_cuda() -> bool:
-        try:
-            if is_cuda_available():
-                print(" CUDA 可用，使用 GPU")
-                return True
-            elif is_torch_installed():
-                print(" 只装了 torch，但没有 CUDA，用 CPU")
-                return False
-            else:
-                print(" 还没有安装 torch，请先安装")
-                return False
-
-        except ImportError:
-            return False
+        return is_cuda_available()
 
     @timeit
     def transcript(self, file_path: str) -> TranscriptResult:
@@ -125,4 +107,3 @@ class WhisperTranscriber(Transcriber):
         transcription_finished.send({
             "file_path": video_path,
         })
-

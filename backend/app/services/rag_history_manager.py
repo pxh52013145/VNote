@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from filelock import FileLock
+
 from app.services.dify_config_manager import _default_config_dir
 
 DEFAULT_CONVERSATION_TITLE = "新对话"
@@ -40,6 +42,7 @@ class RagHistoryManager:
             filepath = _default_config_dir() / "rag_history.json"
         self.path = Path(filepath)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = FileLock(str(self.path) + ".lock")
 
     def _read(self) -> dict[str, Any]:
         if not self.path.exists():
@@ -106,138 +109,160 @@ class RagHistoryManager:
         }
 
     def get_state(self) -> dict[str, Any]:
-        raw = self._read()
-        normalized = self._normalize_state(raw)
-        # Auto-heal broken/legacy files.
-        if raw != normalized:
-            try:
-                data_to_write = dict(normalized)
-                data_to_write.pop("storage_path", None)
-                self._write(data_to_write)
-            except Exception:
-                pass
-        return normalized
+        with self._lock:
+            raw = self._read()
+            normalized = self._normalize_state(raw)
+            # Auto-heal broken/legacy files (do not persist storage_path).
+            data_to_write = dict(normalized)
+            data_to_write.pop("storage_path", None)
+            if raw != data_to_write:
+                try:
+                    self._write(data_to_write)
+                except Exception:
+                    pass
+            return normalized
 
     def replace_state(self, patch: dict[str, Any]) -> dict[str, Any]:
-        normalized = self._normalize_state(patch or {})
-        data_to_write = dict(normalized)
-        data_to_write.pop("storage_path", None)
-        self._write(data_to_write)
-        return normalized
+        with self._lock:
+            normalized = self._normalize_state(patch or {})
+            data_to_write = dict(normalized)
+            data_to_write.pop("storage_path", None)
+            self._write(data_to_write)
+            return normalized
 
     def set_current_conversation(self, conversation_id: str | None) -> dict[str, Any]:
-        state = self.get_state()
-        cid = str(conversation_id or "").strip()
-        if cid and any(c["id"] == cid for c in state.get("conversations", [])):
-            state["current_conversation_id"] = cid
-        elif state.get("conversations"):
-            state["current_conversation_id"] = state["conversations"][0]["id"]
-        else:
-            state["current_conversation_id"] = None
-        self._write({k: v for k, v in state.items() if k != "storage_path"})
-        return state
+        with self._lock:
+            state = self._normalize_state(self._read())
+            cid = str(conversation_id or "").strip()
+            if cid and any(c["id"] == cid for c in state.get("conversations", [])):
+                state["current_conversation_id"] = cid
+            elif state.get("conversations"):
+                state["current_conversation_id"] = state["conversations"][0]["id"]
+            else:
+                state["current_conversation_id"] = None
+            data_to_write = dict(state)
+            data_to_write.pop("storage_path", None)
+            self._write(data_to_write)
+            return state
 
     def upsert_conversation(self, conversation_id: str, patch: dict[str, Any] | None = None) -> dict[str, Any]:
-        state = self.get_state()
-        cid = str(conversation_id or "").strip()
-        if not cid:
-            raise ValueError("conversation_id is required")
+        with self._lock:
+            state = self._normalize_state(self._read())
+            cid = str(conversation_id or "").strip()
+            if not cid:
+                raise ValueError("conversation_id is required")
 
-        patch = patch or {}
-        now = _now_iso()
-        conversations = list(state.get("conversations") or [])
-        existing = next((c for c in conversations if c.get("id") == cid), None)
-        if existing is None:
-            conv = {
-                "id": cid,
-                "title": _normalize_title(patch.get("title") or DEFAULT_CONVERSATION_TITLE),
-                "createdAt": now,
-                "updatedAt": now,
-                "difyConversationId": patch.get("difyConversationId") or patch.get("dify_conversation_id"),
-                "messages": [],
-            }
-            conversations.insert(0, conv)
-            existing = conv
-        else:
-            if "title" in patch and patch.get("title") is not None:
-                existing["title"] = _normalize_title(patch.get("title"))
-            if "difyConversationId" in patch and patch.get("difyConversationId") is not None:
-                existing["difyConversationId"] = patch.get("difyConversationId")
-            if "dify_conversation_id" in patch and patch.get("dify_conversation_id") is not None:
-                existing["difyConversationId"] = patch.get("dify_conversation_id")
-            existing["updatedAt"] = now
+            patch = patch or {}
+            now = _now_iso()
+            conversations = list(state.get("conversations") or [])
+            existing = next((c for c in conversations if c.get("id") == cid), None)
+            if existing is None:
+                conv = {
+                    "id": cid,
+                    "title": _normalize_title(patch.get("title") or DEFAULT_CONVERSATION_TITLE),
+                    "createdAt": now,
+                    "updatedAt": now,
+                    "difyConversationId": patch.get("difyConversationId") or patch.get("dify_conversation_id"),
+                    "messages": [],
+                }
+                conversations.insert(0, conv)
+                existing = conv
+            else:
+                if "title" in patch and patch.get("title") is not None:
+                    existing["title"] = _normalize_title(patch.get("title"))
+                if "difyConversationId" in patch and patch.get("difyConversationId") is not None:
+                    existing["difyConversationId"] = patch.get("difyConversationId")
+                if "dify_conversation_id" in patch and patch.get("dify_conversation_id") is not None:
+                    existing["difyConversationId"] = patch.get("dify_conversation_id")
+                existing["updatedAt"] = now
 
-        conversations.sort(key=lambda c: str(c.get("updatedAt") or ""), reverse=True)
-        conversations = conversations[:MAX_CONVERSATIONS]
-        state["conversations"] = conversations
-        state["current_conversation_id"] = state.get("current_conversation_id") or cid
-        if not any(c["id"] == state["current_conversation_id"] for c in conversations):
-            state["current_conversation_id"] = conversations[0]["id"] if conversations else None
+            conversations.sort(key=lambda c: str(c.get("updatedAt") or ""), reverse=True)
+            conversations = conversations[:MAX_CONVERSATIONS]
+            state["conversations"] = conversations
+            state["current_conversation_id"] = state.get("current_conversation_id") or cid
+            if not any(c["id"] == state["current_conversation_id"] for c in conversations):
+                state["current_conversation_id"] = conversations[0]["id"] if conversations else None
 
-        self._write({k: v for k, v in state.items() if k != "storage_path"})
-        return existing
+            data_to_write = dict(state)
+            data_to_write.pop("storage_path", None)
+            self._write(data_to_write)
+            return existing
 
     def append_message(self, conversation_id: str, msg: dict[str, Any]) -> dict[str, Any]:
-        cid = str(conversation_id or "").strip()
-        if not cid:
-            raise ValueError("conversation_id is required")
+        with self._lock:
+            cid = str(conversation_id or "").strip()
+            if not cid:
+                raise ValueError("conversation_id is required")
 
-        conv = self.upsert_conversation(cid, {})
-        state = self.get_state()
-        conversations = list(state.get("conversations") or [])
-        existing = next((c for c in conversations if c.get("id") == cid), None)
-        if existing is None:
-            # Should not happen, but keep it safe.
-            existing = conv
-            conversations.insert(0, existing)
+            state = self._normalize_state(self._read())
+            now = _now_iso()
+            conversations = list(state.get("conversations") or [])
+            existing = next((c for c in conversations if c.get("id") == cid), None)
+            if existing is None:
+                existing = {
+                    "id": cid,
+                    "title": DEFAULT_CONVERSATION_TITLE,
+                    "createdAt": now,
+                    "updatedAt": now,
+                    "difyConversationId": None,
+                    "messages": [],
+                }
+                conversations.insert(0, existing)
 
-        now = _now_iso()
-        role = str(msg.get("role") or "").strip()
-        content = str(msg.get("content") or "")
-        message = {
-            "id": str(msg.get("id") or uuid4()),
-            "role": role,
-            "content": content,
-            "createdAt": str(msg.get("createdAt") or now),
-        }
-        resources = msg.get("resources")
-        if resources is not None:
-            message["resources"] = resources
+            role = str(msg.get("role") or "").strip()
+            content = str(msg.get("content") or "")
+            message = {
+                "id": str(msg.get("id") or uuid4()),
+                "role": role,
+                "content": content,
+                "createdAt": str(msg.get("createdAt") or now),
+            }
+            resources = msg.get("resources")
+            if resources is not None:
+                message["resources"] = resources
 
-        messages = _safe_list(existing.get("messages"))
-        messages.append(message)
-        existing["messages"] = messages[-MAX_MESSAGES_PER_CONVERSATION:]
+            messages = _safe_list(existing.get("messages"))
+            messages.append(message)
+            existing["messages"] = messages[-MAX_MESSAGES_PER_CONVERSATION:]
 
-        if existing.get("title") == DEFAULT_CONVERSATION_TITLE and role == "user":
-            existing["title"] = _normalize_title(content)
+            if existing.get("title") == DEFAULT_CONVERSATION_TITLE and role == "user":
+                existing["title"] = _normalize_title(content)
 
-        existing["updatedAt"] = now
+            existing["updatedAt"] = now
 
-        conversations.sort(key=lambda c: str(c.get("updatedAt") or ""), reverse=True)
-        state["conversations"] = conversations[:MAX_CONVERSATIONS]
-        state["current_conversation_id"] = state.get("current_conversation_id") or cid
-        if not any(c["id"] == state["current_conversation_id"] for c in state["conversations"]):
-            state["current_conversation_id"] = state["conversations"][0]["id"] if state["conversations"] else None
+            conversations.sort(key=lambda c: str(c.get("updatedAt") or ""), reverse=True)
+            conversations = conversations[:MAX_CONVERSATIONS]
+            state["conversations"] = conversations
+            state["current_conversation_id"] = state.get("current_conversation_id") or cid
+            if not any(c["id"] == state["current_conversation_id"] for c in conversations):
+                state["current_conversation_id"] = conversations[0]["id"] if conversations else None
 
-        self._write({k: v for k, v in state.items() if k != "storage_path"})
-        return existing
+            data_to_write = dict(state)
+            data_to_write.pop("storage_path", None)
+            self._write(data_to_write)
+            return existing
 
     def delete_conversation(self, conversation_id: str) -> dict[str, Any]:
-        state = self.get_state()
-        cid = str(conversation_id or "").strip()
-        conversations = [c for c in (state.get("conversations") or []) if c.get("id") != cid]
-        state["conversations"] = conversations
+        with self._lock:
+            state = self._normalize_state(self._read())
+            cid = str(conversation_id or "").strip()
+            conversations = [c for c in (state.get("conversations") or []) if c.get("id") != cid]
+            state["conversations"] = conversations
 
-        if state.get("current_conversation_id") == cid:
-            state["current_conversation_id"] = conversations[0]["id"] if conversations else None
+            if state.get("current_conversation_id") == cid:
+                state["current_conversation_id"] = conversations[0]["id"] if conversations else None
 
-        self._write({k: v for k, v in state.items() if k != "storage_path"})
-        return state
+            data_to_write = dict(state)
+            data_to_write.pop("storage_path", None)
+            self._write(data_to_write)
+            return state
 
     def clear(self) -> dict[str, Any]:
-        state = self.get_state()
-        state["conversations"] = []
-        state["current_conversation_id"] = None
-        self._write({k: v for k, v in state.items() if k != "storage_path"})
-        return state
-
+        with self._lock:
+            state = self._normalize_state(self._read())
+            state["conversations"] = []
+            state["current_conversation_id"] = None
+            data_to_write = dict(state)
+            data_to_write.pop("storage_path", None)
+            self._write(data_to_write)
+            return state

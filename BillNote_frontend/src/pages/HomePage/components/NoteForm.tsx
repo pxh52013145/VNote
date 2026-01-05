@@ -7,16 +7,17 @@ import {
   FormLabel,
   FormMessage,
 } from '@/components/ui/form.tsx'
-import { useEffect,useState } from 'react'
-import { useForm, useWatch } from 'react-hook-form'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { type FieldErrors, useFieldArray, useForm, useWatch } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 
-import { Info, Loader2, Plus } from 'lucide-react'
-import { message, Alert } from 'antd'
+import { CheckCircle2, Info, Loader2, PauseCircle, Plus, X, XCircle } from 'lucide-react'
+import { Alert } from 'antd'
+import toast from 'react-hot-toast'
 import { generateNote } from '@/services/note.ts'
 import { uploadFile } from '@/services/upload.ts'
-import { useTaskStore } from '@/store/taskStore'
+import { type Task, useTaskStore } from '@/store/taskStore'
 import { useModelStore } from '@/store/modelStore'
 import {
   Tooltip,
@@ -37,13 +38,12 @@ import {
 import { Input } from '@/components/ui/input.tsx'
 import { Textarea } from '@/components/ui/textarea.tsx'
 import { noteStyles, noteFormats, videoPlatforms } from '@/constant/note.ts'
-import { fetchModels } from '@/services/model.ts'
 import { useNavigate } from 'react-router-dom'
 
 /* -------------------- 校验 Schema -------------------- */
 const formSchema = z
   .object({
-    video_url: z.string().optional(),
+    video_urls: z.array(z.string()).default([]),
     platform: z.string().nonempty('请选择平台'),
     quality: z.enum(['fast', 'medium', 'slow']),
     screenshot: z.boolean().optional(),
@@ -59,24 +59,33 @@ const formSchema = z
       .default([3, 3])
       .optional(),
   })
-  .superRefine(({ video_url, platform }, ctx) => {
-    if (platform === 'local') {
-      if (!video_url) {
-        ctx.addIssue({ code: 'custom', message: '本地视频路径不能为空', path: ['video_url'] })
-      }
+  .superRefine(({ video_urls, platform }, ctx) => {
+    const cleaned = (Array.isArray(video_urls) ? video_urls : []).map(v => String(v ?? '').trim())
+    const entries = cleaned.filter(Boolean)
+
+    if (entries.length === 0) {
+      ctx.addIssue({
+        code: 'custom',
+        message: platform === 'local' ? '本地视频路径不能为空' : '视频链接不能为空',
+        path: ['video_urls', 0],
+      })
+      return
     }
-    else {
-      if (!video_url) {
-        ctx.addIssue({ code: 'custom', message: '视频链接不能为空', path: ['video_url'] })
+
+    if (platform === 'local') {
+      if (entries.length > 1) {
+        ctx.addIssue({ code: 'custom', message: '本地视频暂不支持批量导入', path: ['video_urls'] })
       }
-      else {
+      return
+    } else {
+      for (let i = 0; i < cleaned.length; i += 1) {
+        const raw = cleaned[i]
+        if (!raw) continue
         try {
-          const url = new URL(video_url)
-          if (!['http:', 'https:'].includes(url.protocol))
-            throw new Error()
-        }
-        catch {
-          ctx.addIssue({ code: 'custom', message: '请输入正确的视频链接', path: ['video_url'] })
+          const url = new URL(raw)
+          if (!['http:', 'https:'].includes(url.protocol)) throw new Error()
+        } catch {
+          ctx.addIssue({ code: 'custom', message: '请输入正确的视频链接', path: ['video_urls', i] })
         }
       }
     }
@@ -127,12 +136,81 @@ const CheckboxGroup = ({
 )
 
 /* -------------------- 主组件 -------------------- */
+type DuplicateStrategy = 'ask' | 'skip' | 'regenerate'
+type BatchItemStatus = 'queued' | 'running' | 'success' | 'failed' | 'skipped'
+
+interface BatchItem {
+  id: string
+  url: string
+  platform: string
+  status: BatchItemStatus
+  taskId?: string
+  error?: string
+}
+
+const inferPlatformFromUrl = (defaultPlatform: string, url: string, enabled: boolean) => {
+  if (!enabled) return defaultPlatform
+  const u = String(url || '').toLowerCase()
+  if (u.includes('bilibili.com')) return 'bilibili'
+  if (u.includes('youtube.com') || u.includes('youtu.be')) return 'youtube'
+  if (u.includes('douyin.com')) return 'douyin'
+  if (u.includes('kuaishou.com')) return 'kuaishou'
+  return defaultPlatform
+}
+
+const safeUrl = (raw: string) => {
+  try {
+    return new URL(raw)
+  } catch {
+    return null
+  }
+}
+
+const buildSourceKeyFromUrl = (platform: string, rawUrl: string) => {
+  const p = String(platform || '').toLowerCase()
+  const raw = String(rawUrl || '').trim()
+  if (!raw) return null
+
+  if (p === 'local') return `local:${raw}`
+
+  const parsed = safeUrl(raw)
+  if (!parsed) return `${p}:${raw}`
+
+  // ignore timestamps and other noisy params
+  parsed.hash = ''
+  parsed.searchParams.delete('t')
+  parsed.searchParams.delete('start')
+
+  if (p === 'bilibili') {
+    const bv = /BV[0-9A-Za-z]+/i.exec(parsed.pathname)?.[0] || /BV[0-9A-Za-z]+/i.exec(raw)?.[0]
+    const part = parsed.searchParams.get('p')
+    if (bv) return `bilibili:${bv}${part ? `_p${part}` : ''}`
+  }
+
+  if (p === 'youtube') {
+    const v = parsed.searchParams.get('v') || ''
+    const short = parsed.hostname.includes('youtu.be') ? parsed.pathname.replace(/^\/+/, '') : ''
+    const vid = v || short
+    if (vid) return `youtube:${vid}`
+  }
+
+  return `${p}:${parsed.toString()}`
+}
+
+const buildSourceKeyFromTask = (task: Task) => {
+  const platform = String(task?.platform || task?.formData?.platform || '').toLowerCase()
+  const vid = String(task?.audioMeta?.video_id || '').trim()
+  if (platform && vid) return `${platform}:${vid}`
+  if (task?.formData?.video_url) return buildSourceKeyFromUrl(platform, task.formData.video_url)
+  return null
+}
+
 const NoteForm = () => {
   const navigate = useNavigate();
   const [isUploading, setIsUploading] = useState(false)
   const [uploadSuccess, setUploadSuccess] = useState(false)
   /* ---- 全局状态 ---- */
-  const { addPendingTask, currentTaskId, setCurrentTask, getCurrentTask, retryTask } =
+  const { tasks, addPendingTask, ingestTaskId, setIngestTask, getIngestTask, retryTask } =
     useTaskStore()
   const { loadEnabledModels, modelList, showFeatureHint, setShowFeatureHint } = useModelStore()
 
@@ -141,7 +219,7 @@ const NoteForm = () => {
     resolver: zodResolver(formSchema),
     defaultValues: {
       platform: 'bilibili',
-      video_url: '',
+      video_urls: [''],
       quality: 'medium',
       screenshot: false,
       link: false,
@@ -154,7 +232,28 @@ const NoteForm = () => {
       format: [],
     },
   })
-  const currentTask = getCurrentTask()
+  const currentTask = getIngestTask()
+  const { fields: videoUrlFields, append: appendVideoUrl, remove: removeVideoUrl } = useFieldArray({
+    control: form.control,
+    name: 'video_urls',
+  })
+  const watchedVideoUrls = useWatch({ control: form.control, name: 'video_urls' }) as string[]
+  const cleanedVideoUrls = useMemo(() => {
+    return (Array.isArray(watchedVideoUrls) ? watchedVideoUrls : [])
+      .map(v => String(v ?? '').trim())
+      .filter(Boolean)
+  }, [watchedVideoUrls])
+
+  const [autoDetectPlatform, setAutoDetectPlatform] = useState(true)
+  const [duplicateStrategy, setDuplicateStrategy] = useState<DuplicateStrategy>('ask')
+
+  const [batchItems, setBatchItems] = useState<BatchItem[]>([])
+  const [batchRunning, setBatchRunning] = useState(false)
+  const [stopAfterCurrent, setStopAfterCurrent] = useState(false)
+  const stopAfterCurrentRef = useRef(false)
+  useEffect(() => {
+    stopAfterCurrentRef.current = stopAfterCurrent
+  }, [stopAfterCurrent])
 
   /* ---- 派生状态（只 watch 一次，提高性能） ---- */
   const platform = useWatch({ control: form.control, name: 'platform' }) as string
@@ -174,7 +273,7 @@ const NoteForm = () => {
     const defaults = {
       platform: 'bilibili',
       quality: 'medium' as const,
-      video_url: '',
+      video_urls: [''],
       model_name: modelList[0]?.model_name || '',
       style: 'minimal',
       extras: '',
@@ -187,7 +286,7 @@ const NoteForm = () => {
     }
 
     // No selected task (e.g. app start) -> always show a fresh form.
-    if (!currentTaskId) {
+    if (!ingestTaskId) {
       setUploadSuccess(false)
       form.reset(defaults)
       return
@@ -198,10 +297,9 @@ const NoteForm = () => {
 
     form.reset({
       ...defaults,
-      ...formData,
       // ensure fallbacks
       platform: formData.platform || defaults.platform,
-      video_url: formData.video_url || defaults.video_url,
+      video_urls: [formData.video_url || defaults.video_urls[0] || ''],
       model_name: formData.model_name || defaults.model_name,
       style: formData.style || defaults.style,
       quality: (formData.quality as any) || defaults.quality,
@@ -215,14 +313,14 @@ const NoteForm = () => {
     })
   }, [
     // 当下面任意一个变了，就重新 reset
-    currentTaskId,
+    ingestTaskId,
     // modelList 用来兜底 model_name
     modelList.length,
   ])
 
   /* ---- 帮助函数 ---- */
-  const isGenerating = () => !['SUCCESS', 'FAILED', undefined].includes(getCurrentTask()?.status)
-  const generating = isGenerating()
+  const isGenerating = () => !['SUCCESS', 'FAILED', undefined].includes(getIngestTask()?.status)
+  const generating = batchRunning || isGenerating()
   const handleFileUpload = async (file: File, cb: (url: string) => void) => {
     const formData = new FormData()
     formData.append('file', file)
@@ -242,21 +340,147 @@ const NoteForm = () => {
     }
   }
 
+  const updateBatchItem = (id: string, patch: Partial<BatchItem>) => {
+    setBatchItems(prev => prev.map(item => (item.id === id ? { ...item, ...patch } : item)))
+  }
+
+  const resetBatch = () => {
+    if (batchRunning) return
+    setBatchItems([])
+    setStopAfterCurrent(false)
+  }
+
   const onSubmit = async (values: NoteFormValues) => {
-    console.log('Not even go here')
-    const payload: NoteFormValues = {
-      ...values,
-      provider_id: modelList.find(m => m.model_name === values.model_name)!.provider_id,
-      task_id: currentTaskId || '',
-    }
-    if (currentTaskId) {
-      retryTask(currentTaskId, payload)
+    if (batchRunning) return
+
+    const providerId = modelList.find(m => m.model_name === values.model_name)?.provider_id || ''
+    if (!providerId) {
+      toast.error('请先选择可用模型')
       return
     }
 
+    const urls = (Array.isArray(values.video_urls) ? values.video_urls : [])
+      .map(v => String(v ?? '').trim())
+      .filter(Boolean)
+
+    if (urls.length === 0) {
+      toast.error(values.platform === 'local' ? '本地视频路径不能为空' : '视频链接不能为空')
+      return
+    }
+
+    const buildFormData = (video_url: string, platform: string) => ({
+      video_url,
+      platform,
+      quality: values.quality,
+      model_name: values.model_name,
+      provider_id: providerId,
+      format: values.format,
+      style: values.style,
+      extras: values.extras,
+      link: values.link,
+      screenshot: values.screenshot,
+      video_understanding: values.video_understanding,
+      video_interval: values.video_interval,
+      grid_size: values.grid_size,
+    })
+
+    if (ingestTaskId) {
+      await retryTask(ingestTaskId, buildFormData(urls[0], values.platform) as any)
+      toast.success('已提交重新生成任务')
+      return
+    }
+
+    const tasksById = new Map<string, Task>()
+    const sourceToTaskId = new Map<string, string>()
+    for (const t of tasks) {
+      tasksById.set(t.id, t)
+      const key = buildSourceKeyFromTask(t)
+      if (key && !sourceToTaskId.has(key)) sourceToTaskId.set(key, t.id)
+    }
+
+    const nextItems: BatchItem[] = urls.map((url, idx) => ({
+      id: `${Date.now()}-${idx}`,
+      url,
+      platform: '',
+      status: 'queued',
+    }))
+    setBatchItems(nextItems)
+    setBatchRunning(true)
+    setStopAfterCurrent(false)
+    stopAfterCurrentRef.current = false
+
+    let succeeded = 0
+    let failed = 0
+    let skipped = 0
+
+    for (const item of nextItems) {
+      if (stopAfterCurrentRef.current && succeeded + failed + skipped > 0) {
+        updateBatchItem(item.id, { status: 'skipped' })
+        skipped += 1
+        continue
+      }
+
+      const itemPlatform =
+        values.platform === 'local'
+          ? 'local'
+          : inferPlatformFromUrl(values.platform, item.url, autoDetectPlatform && values.platform !== 'local')
+
+      updateBatchItem(item.id, { status: 'running', platform: itemPlatform, error: undefined })
+
+      const formData = buildFormData(item.url, itemPlatform)
+      const sourceKey = buildSourceKeyFromUrl(itemPlatform, item.url)
+
+      try {
+        const existingTaskId = sourceKey ? sourceToTaskId.get(sourceKey) || null : null
+        if (existingTaskId) {
+          const existingTask = tasksById.get(existingTaskId)
+          const title = existingTask?.audioMeta?.title || existingTask?.formData?.video_url || existingTaskId
+
+          if (duplicateStrategy === 'skip') {
+            updateBatchItem(item.id, { status: 'skipped', taskId: existingTaskId })
+            skipped += 1
+            continue
+          }
+
+          const shouldRegenerate =
+            duplicateStrategy === 'regenerate' ||
+            (duplicateStrategy === 'ask' &&
+              window.confirm(
+                `检测到该视频已在库中：\n${title}\n\n是否重新生成并入库？\n\n确定：重新生成\n取消：仍然新建任务`
+              ))
+
+          if (shouldRegenerate) {
+            await retryTask(existingTaskId, formData as any)
+            updateBatchItem(item.id, { status: 'success', taskId: existingTaskId })
+            succeeded += 1
+            continue
+          }
+        }
+
+        const resp = await generateNote(formData as any, { silent: true })
+        const taskId = resp?.task_id
+        if (!taskId) throw new Error('任务创建失败：未返回 task_id')
+
+        addPendingTask(taskId, itemPlatform, formData as any)
+        if (sourceKey) sourceToTaskId.set(sourceKey, taskId)
+
+        updateBatchItem(item.id, { status: 'success', taskId })
+        succeeded += 1
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e)
+        updateBatchItem(item.id, { status: 'failed', error: msg })
+        failed += 1
+      }
+    }
+
+    setBatchRunning(false)
+    setStopAfterCurrent(false)
+
+    if (failed === 0 && skipped === 0) toast.success(`批量入库完成：${succeeded}/${nextItems.length}`)
+    else toast.success(`批量入库结束：成功${succeeded}，失败${failed}，跳过${skipped}`)
+    return
+
     // message.success('已提交任务')
-    const  data  = await generateNote(payload)
-    addPendingTask(data.task_id, values.platform, payload)
   }
   const onInvalid = (errors: FieldErrors<NoteFormValues>) => {
     console.warn('表单校验失败：', errors)
@@ -265,12 +489,12 @@ const NoteForm = () => {
   const handleCreateNew = () => {
     // 🔁 这里清空当前任务状态
     // 比如调用 resetCurrentTask() 或者 navigate 到一个新页面
-    setCurrentTask(null)
+    setIngestTask(null)
     setUploadSuccess(false)
     form.reset({
       platform: 'bilibili',
       quality: 'medium',
-      video_url: '',
+      video_urls: [''],
       model_name: modelList[0]?.model_name || '',
       style: 'minimal',
       extras: '',
@@ -289,12 +513,40 @@ const NoteForm = () => {
       <div className="flex gap-2">
         <Button
           type="submit"
-          className={!editing ? 'w-full' : 'w-2/3' + ' bg-primary'}
+          className={
+            editing || (!editing && (batchRunning || batchItems.length > 0))
+              ? 'flex-1 bg-primary'
+              : 'w-full bg-primary'
+          }
           disabled={generating}
         >
           {generating && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-          {label}
+          {batchRunning
+            ? '批量处理中…'
+            : !editing && cleanedVideoUrls.length > 1
+              ? `批量生成并入库（${cleanedVideoUrls.length}）`
+              : label}
         </Button>
+
+        {!editing && batchRunning && (
+          <Button
+            type="button"
+            variant="outline"
+            className="w-32"
+            disabled={stopAfterCurrent}
+            onClick={() => setStopAfterCurrent(true)}
+          >
+            <PauseCircle className="mr-2 h-4 w-4" />
+            停止
+          </Button>
+        )}
+
+        {!editing && !batchRunning && batchItems.length > 0 && (
+          <Button type="button" variant="outline" className="w-32" onClick={resetBatch}>
+            <X className="mr-2 h-4 w-4" />
+            清空
+          </Button>
+        )}
 
         {editing && (
           <Button type="button" variant="outline" className="w-1/3" onClick={handleCreateNew}>
@@ -353,7 +605,7 @@ const NoteForm = () => {
             {/* 链接输入 / 上传框 */}
             <FormField
               control={form.control}
-              name="video_url"
+              name="video_urls.0"
               render={({ field }) => (
                 <FormItem className="flex-1">
                   {platform === 'local' ? (
@@ -369,9 +621,77 @@ const NoteForm = () => {
             />
           </div>
 
+          {platform !== 'local' && (
+            <div className="mt-2 space-y-2">
+              {videoUrlFields.slice(1).map((row, idx) => {
+                const fieldIndex = idx + 1
+                return (
+                  <div key={row.id} className="flex gap-2">
+                    <div className="w-32" />
+                    <FormField
+                      control={form.control}
+                      name={`video_urls.${fieldIndex}`}
+                      render={({ field }) => (
+                        <FormItem className="flex-1">
+                          <Input disabled={!!editing} placeholder="请输入视频网站链接" {...field} />
+                          <FormMessage style={{ display: 'none' }} />
+                        </FormItem>
+                      )}
+                    />
+                    {!editing && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="h-10 w-10 px-0"
+                        onClick={() => removeVideoUrl(fieldIndex)}
+                      >
+                        <X className="h-4 w-4" />
+                      </Button>
+                    )}
+                  </div>
+                )
+              })}
+
+              {!editing && (
+                <div className="flex gap-2">
+                  <div className="w-32" />
+                  <Button type="button" variant="outline" className="flex-1" onClick={() => appendVideoUrl('')}>
+                    <Plus className="mr-2 h-4 w-4" />
+                    添加
+                  </Button>
+                </div>
+              )}
+
+              {!editing && (
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="flex items-center justify-between gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
+                    <span className="font-medium text-slate-700">自动识别平台（按链接域名）</span>
+                    <Checkbox
+                      checked={autoDetectPlatform}
+                      onCheckedChange={checked => setAutoDetectPlatform(Boolean(checked))}
+                    />
+                  </label>
+                  <div className="space-y-1">
+                    <div className="text-xs font-medium text-slate-600">重复处理</div>
+                    <Select value={duplicateStrategy} onValueChange={v => setDuplicateStrategy(v as DuplicateStrategy)}>
+                      <SelectTrigger className="h-8">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="ask">每次提示</SelectItem>
+                        <SelectItem value="skip">跳过已存在</SelectItem>
+                        <SelectItem value="regenerate">直接重新生成</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           <FormField
             control={form.control}
-            name="video_url"
+            name="video_urls.0"
             render={({ field }) => (
               <FormItem className="flex-1">
                 {platform === 'local' && (
@@ -415,6 +735,69 @@ const NoteForm = () => {
               </FormItem>
             )}
           />
+          {batchItems.length > 0 && (
+            <div className="rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-sm font-semibold text-slate-800">批量队列</div>
+                <div className="flex items-center gap-3 text-xs text-slate-500">
+                  <span>
+                    {batchItems.filter(i => i.status === 'success').length}/{batchItems.length}
+                  </span>
+                  {!batchRunning && (
+                    <Button type="button" variant="ghost" size="sm" onClick={resetBatch}>
+                      清空
+                    </Button>
+                  )}
+                </div>
+              </div>
+
+              <ScrollArea className="mt-2 h-40">
+                <div className="space-y-2 pr-2">
+                  {batchItems.map(item => (
+                    <div
+                      key={item.id}
+                      className="flex items-start gap-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-2"
+                    >
+                      <div className="mt-0.5">
+                        {item.status === 'running' ? (
+                          <Loader2 className="h-4 w-4 animate-spin text-slate-500" />
+                        ) : item.status === 'success' ? (
+                          <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                        ) : item.status === 'failed' ? (
+                          <XCircle className="h-4 w-4 text-rose-600" />
+                        ) : item.status === 'skipped' ? (
+                          <PauseCircle className="h-4 w-4 text-amber-600" />
+                        ) : (
+                          <div className="h-4 w-4" />
+                        )}
+                      </div>
+
+                      <div className="min-w-0 flex-1 space-y-1">
+                        <div className="break-all text-xs font-medium text-slate-700">{item.url}</div>
+                        {item.platform ? (
+                          <div className="text-[10px] text-slate-500">平台：{item.platform}</div>
+                        ) : null}
+                        {item.error ? <div className="break-all text-xs text-rose-600">{item.error}</div> : null}
+                      </div>
+
+                      <div className="shrink-0 text-[10px] text-slate-500">
+                        {item.status === 'queued'
+                          ? '等待'
+                          : item.status === 'running'
+                            ? '处理中'
+                            : item.status === 'success'
+                              ? '完成'
+                              : item.status === 'failed'
+                                ? '失败'
+                                : '已跳过'}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </ScrollArea>
+            </div>
+          )}
+
           <div className="grid grid-cols-2 gap-2">
             {/* 模型选择 */}
             {

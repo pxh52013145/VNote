@@ -3,6 +3,7 @@ import { FileText, Plus, Search } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 
 import MarkdownViewer from '@/pages/HomePage/components/MarkdownViewer'
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable'
 import { useTaskStore } from '@/store/taskStore'
 
 const formatDate = (iso: string) => {
@@ -49,8 +50,9 @@ const KnowledgePage = () => {
   }, [tasks, query])
 
   return (
-    <div className="flex h-full w-full bg-slate-50">
-      <div className="w-80 lg:w-96 bg-white border-r border-slate-200 flex flex-col z-10 shadow-sm">
+    <ResizablePanelGroup direction="horizontal" autoSaveId="note-layout" className="h-full w-full bg-slate-50">
+      <ResizablePanel defaultSize={25} minSize={16} maxSize={40}>
+        <div className="flex h-full flex-col border-r border-slate-200 bg-white shadow-sm">
         <div className="h-16 px-6 border-b border-slate-100 flex items-center justify-between">
           <h2 className="font-semibold text-slate-800 flex items-center gap-2">
             <FileText className="w-4 h-4 text-brand-500" />
@@ -128,12 +130,17 @@ const KnowledgePage = () => {
             className="empty:hidden absolute inset-0 z-20"
           />
         </div>
-      </div>
+        </div>
+      </ResizablePanel>
 
-      <div className="flex-1 flex flex-col h-full overflow-hidden">
-        <MarkdownViewer status={status} />
-      </div>
-    </div>
+      <ResizableHandle withHandle />
+
+      <ResizablePanel defaultSize={75} minSize={30}>
+        <div className="flex h-full flex-col overflow-hidden">
+          <MarkdownViewer status={status} />
+        </div>
+      </ResizablePanel>
+    </ResizablePanelGroup>
   )
 }
 

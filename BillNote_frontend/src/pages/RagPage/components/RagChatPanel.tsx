@@ -7,6 +7,7 @@ import { ragChat } from '@/services/rag'
 import { useRagStore, type RagChatMessage } from '@/store/ragStore'
 import { useTaskStore } from '@/store/taskStore'
 import RagConversationList from '@/pages/RagPage/components/RagConversationList'
+import { extractQueryKeywords } from '@/utils/ragKeywords'
 
 const isDifyIndexingCompleted = (payload: any) => {
   const docs = payload?.data
@@ -23,6 +24,10 @@ const RagChatPanel = () => {
   const createConversation = useRagStore(state => state.createConversation)
   const appendMessage = useRagStore(state => state.appendMessage)
   const updateConversation = useRagStore(state => state.updateConversation)
+  const setSelectedReferenceMessage = useRagStore(state => state.setSelectedReferenceMessage)
+  const selectedReferenceMessageId = useRagStore(state =>
+    state.currentConversationId ? state.selectedReferenceByConversation[state.currentConversationId] || null : null
+  )
 
   const tasks = useTaskStore(state => state.tasks)
 
@@ -35,6 +40,14 @@ const RagChatPanel = () => {
   }, [conversations, currentConversationId])
 
   const messages = currentConversation?.messages || []
+  const effectiveSelectedReferenceMessageId = useMemo(() => {
+    if (!currentConversationId) return null
+    if (selectedReferenceMessageId) return selectedReferenceMessageId
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i]?.role === 'assistant') return messages[i]?.id || null
+    }
+    return null
+  }, [currentConversationId, messages, selectedReferenceMessageId])
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const [isHistoryOpen, setIsHistoryOpen] = useState(false)
@@ -91,14 +104,19 @@ const RagChatPanel = () => {
         updateConversation(convId, { difyConversationId: resp.conversation_id })
       }
 
+      const keywords = extractQueryKeywords(query)
       const assistantMsg: RagChatMessage = {
         id: resp.message_id || uuidv4(),
         role: 'assistant',
         content: resp.answer || '',
         createdAt: new Date().toISOString(),
+        query,
+        keywords,
+        replyTo: userMsg.id,
         resources: resp.retriever_resources || [],
       }
       appendMessage(convId, assistantMsg)
+      setSelectedReferenceMessage(convId, assistantMsg.id)
     } catch (e) {
       console.error(e)
       // `request` already shows an error toast (network/backend). Avoid double-toasting here.
@@ -221,19 +239,49 @@ const RagChatPanel = () => {
               )
             }
 
+            const isSelected = !!(currentConversationId && effectiveSelectedReferenceMessageId === m.id)
+
             return (
               <div key={m.id} className="flex gap-4 max-w-3xl mx-auto">
                 <div className="w-8 h-8 rounded-full bg-primary flex-shrink-0 flex items-center justify-center text-primary-foreground text-xs font-bold">
                   AI
                 </div>
                 <div className="space-y-2 w-full">
-                  <div className="bg-white p-4 rounded-2xl rounded-tl-none border border-slate-200 shadow-sm text-slate-700 text-sm leading-relaxed whitespace-pre-wrap">
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    onClick={() =>
+                      currentConversationId ? setSelectedReferenceMessage(currentConversationId, m.id) : undefined
+                    }
+                    onKeyDown={e => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault()
+                        if (!currentConversationId) return
+                        setSelectedReferenceMessage(currentConversationId, m.id)
+                      }
+                    }}
+                    className={[
+                      'bg-white p-4 rounded-2xl rounded-tl-none border shadow-sm text-slate-700 text-sm leading-relaxed whitespace-pre-wrap cursor-pointer',
+                      isSelected ? 'border-primary/40 ring-2 ring-primary/10' : 'border-slate-200',
+                    ].join(' ')}
+                    title="点击查看该条回复的引用"
+                  >
                     {m.content}
                   </div>
                   <div className="flex gap-2">
-                    <span className="text-xs bg-slate-100 text-slate-500 px-2 py-1 rounded border border-slate-200">
+                    <button
+                      type="button"
+                      onClick={() => (currentConversationId ? setSelectedReferenceMessage(currentConversationId, m.id) : undefined)}
+                      className={[
+                        'text-xs px-2 py-1 rounded border transition-colors',
+                        isSelected
+                          ? 'bg-primary-light text-primary border-primary/30'
+                          : 'bg-slate-100 text-slate-500 border-slate-200 hover:bg-slate-200',
+                      ].join(' ')}
+                      title="点击查看该条回复的引用"
+                    >
                       {m.resources && m.resources.length > 0 ? `引用：${m.resources.length} 条` : '无引用'}
-                    </span>
+                    </button>
                   </div>
                 </div>
               </div>

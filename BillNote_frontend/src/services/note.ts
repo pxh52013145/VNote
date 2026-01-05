@@ -11,10 +11,10 @@ export const generateNote = async (data: {
   format: Array<string>
   style: string
   extras?: string
-  video_understand?: boolean
+  video_understanding?: boolean
   video_interval?: number
   grid_size: Array<number>
-}) => {
+}, opts?: { silent?: boolean }) => {
   try {
     console.log('generateNote', data)
     const response = await request.post('/generate_note', data)
@@ -25,7 +25,9 @@ export const generateNote = async (data: {
       }
       return null
     }
-    toast.success('笔记生成任务已提交！')
+    if (!opts?.silent) {
+      toast.success('笔记生成任务已提交！')
+    }
 
     console.log('res', response)
     // 成功提示

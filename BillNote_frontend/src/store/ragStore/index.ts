@@ -19,6 +19,10 @@ export interface RagChatMessage {
   role: RagChatRole
   content: string
   createdAt: string
+  // Assistant messages may carry citations; keep the user query for keyword highlighting.
+  query?: string
+  keywords?: string[]
+  replyTo?: string
   resources?: RagRetrieverResource[]
 }
 
@@ -35,6 +39,7 @@ interface RagStore {
   userId: string
   conversations: RagConversation[]
   currentConversationId: string | null
+  selectedReferenceByConversation: Record<string, string | null>
   initialized: boolean
   initializing: boolean
 
@@ -48,12 +53,42 @@ interface RagStore {
   setCurrentConversation: (id: string | null) => void
   getCurrentConversation: () => RagConversation | null
 
+  setSelectedReferenceMessage: (conversationId: string, messageId: string | null) => void
+
   appendMessage: (conversationId: string, msg: RagChatMessage) => void
 }
 
 const DEFAULT_CONVERSATION_TITLE = '新对话'
 const MAX_CONVERSATIONS = 30
 const MAX_MESSAGES_PER_CONVERSATION = 60
+
+const mergeServerMessages = (local: RagChatMessage[], server: unknown): RagChatMessage[] => {
+  const localMessages = Array.isArray(local) ? local : []
+  if (!Array.isArray(server)) return localMessages
+
+  const serverById = new Map<string, RagChatMessage>()
+  for (const m of server) {
+    if (!m || typeof m !== 'object') continue
+    const id = String((m as any).id || '').trim()
+    if (!id) continue
+    serverById.set(id, m as RagChatMessage)
+  }
+
+  const merged: RagChatMessage[] = localMessages.map(m => serverById.get(m.id) || m)
+  const mergedIds = new Set(merged.map(m => m.id))
+
+  for (const m of server) {
+    if (!m || typeof m !== 'object') continue
+    const id = String((m as any).id || '').trim()
+    if (!id || mergedIds.has(id)) continue
+    const msg = serverById.get(id)
+    if (!msg) continue
+    merged.push(msg)
+    mergedIds.add(id)
+  }
+
+  return merged.slice(-MAX_MESSAGES_PER_CONVERSATION)
+}
 
 const normalizeTitle = (text: string) => {
   const t = (text || '').replace(/\s+/g, ' ').trim()
@@ -96,6 +131,7 @@ export const useRagStore = create<RagStore>()((set, get) => ({
   userId: '',
   conversations: [],
   currentConversationId: null,
+  selectedReferenceByConversation: {},
   initialized: false,
   initializing: false,
 
@@ -200,11 +236,14 @@ export const useRagStore = create<RagStore>()((set, get) => ({
 
   removeConversation: id => {
     const prev = get().conversations
+    const prevSelected = get().selectedReferenceByConversation
     set(state => {
       const conversations = state.conversations.filter(c => c.id !== id)
       const currentConversationId =
         state.currentConversationId === id ? (conversations[0]?.id ?? null) : state.currentConversationId
-      return { conversations, currentConversationId }
+      const nextSelected = { ...state.selectedReferenceByConversation }
+      delete nextSelected[id]
+      return { conversations, currentConversationId, selectedReferenceByConversation: nextSelected }
     })
 
     void deleteRagConversation(id)
@@ -219,13 +258,14 @@ export const useRagStore = create<RagStore>()((set, get) => ({
       })
       .catch(e => {
         console.error(e)
-        set({ conversations: prev })
+        set({ conversations: prev, selectedReferenceByConversation: prevSelected })
       })
   },
 
   clearConversations: () => {
     const prev = get().conversations
-    set({ conversations: [], currentConversationId: null })
+    const prevSelected = get().selectedReferenceByConversation
+    set({ conversations: [], currentConversationId: null, selectedReferenceByConversation: {} })
     void clearRagConversations()
       .then(state => {
         const conversations = pickConversation(state?.conversations)
@@ -238,7 +278,7 @@ export const useRagStore = create<RagStore>()((set, get) => ({
       })
       .catch(e => {
         console.error(e)
-        set({ conversations: prev })
+        set({ conversations: prev, selectedReferenceByConversation: prevSelected })
       })
   },
 
@@ -252,6 +292,16 @@ export const useRagStore = create<RagStore>()((set, get) => ({
   getCurrentConversation: () => {
     const currentConversationId = get().currentConversationId
     return get().conversations.find(c => c.id === currentConversationId) || null
+  },
+
+  setSelectedReferenceMessage: (conversationId, messageId) => {
+    if (!conversationId) return
+    set(state => ({
+      selectedReferenceByConversation: {
+        ...state.selectedReferenceByConversation,
+        [conversationId]: messageId,
+      },
+    }))
   },
 
   appendMessage: (conversationId, msg) => {
@@ -278,7 +328,7 @@ export const useRagStore = create<RagStore>()((set, get) => ({
                   title: String(conv.title || c.title),
                   updatedAt: String(conv.updatedAt || c.updatedAt),
                   difyConversationId: conv.difyConversationId || c.difyConversationId,
-                  messages: Array.isArray(conv.messages) ? conv.messages : c.messages,
+                  messages: mergeServerMessages(c.messages, conv.messages),
                 }
               : c
           ),

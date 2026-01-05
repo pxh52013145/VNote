@@ -95,12 +95,15 @@ export interface Task {
 interface TaskStore {
   tasks: Task[]
   currentTaskId: string | null
+  ingestTaskId: string | null
   addPendingTask: (taskId: string, platform: string, formData: Task['formData']) => void
   updateTaskContent: (id: string, data: Partial<Omit<Task, 'id' | 'createdAt'>>) => void
   removeTask: (id: string) => Promise<void>
   clearTasks: () => void
   setCurrentTask: (taskId: string | null) => void
+  setIngestTask: (taskId: string | null) => void
   getCurrentTask: () => Task | null
+  getIngestTask: () => Task | null
   retryTask: (id: string, payload?: Task['formData']) => Promise<void>
 }
 
@@ -109,6 +112,7 @@ export const useTaskStore = create<TaskStore>()(
     (set, get) => ({
       tasks: [],
       currentTaskId: null,
+      ingestTaskId: null,
 
       addPendingTask: (taskId: string, platform: string, formData: any) =>
 
@@ -193,6 +197,10 @@ export const useTaskStore = create<TaskStore>()(
         const currentTaskId = get().currentTaskId
         return get().tasks.find(task => task.id === currentTaskId) || null
       },
+      getIngestTask: () => {
+        const ingestTaskId = get().ingestTaskId
+        return get().tasks.find(task => task.id === ingestTaskId) || null
+      },
       retryTask: async (id: string, payload?: any) => {
 
         if (!id){
@@ -230,6 +238,7 @@ export const useTaskStore = create<TaskStore>()(
         set(state => ({
           tasks: state.tasks.filter(task => task.id !== id),
           currentTaskId: state.currentTaskId === id ? null : state.currentTaskId,
+          ingestTaskId: state.ingestTaskId === id ? null : state.ingestTaskId,
         }))
 
         // 调用后端删除接口（如果找到了任务）
@@ -241,9 +250,10 @@ export const useTaskStore = create<TaskStore>()(
         }
       },
 
-      clearTasks: () => set({ tasks: [], currentTaskId: null }),
+      clearTasks: () => set({ tasks: [], currentTaskId: null, ingestTaskId: null }),
 
       setCurrentTask: taskId => set({ currentTaskId: taskId }),
+      setIngestTask: taskId => set({ ingestTaskId: taskId }),
     }),
     {
       name: 'task-storage',
@@ -254,6 +264,7 @@ export const useTaskStore = create<TaskStore>()(
         ...currentState,
         ...(persistedState as any),
         currentTaskId: null,
+        ingestTaskId: null,
       }),
     }
   )

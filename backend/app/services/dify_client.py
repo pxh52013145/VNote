@@ -156,6 +156,56 @@ class DifyKnowledgeClient:
     def close(self) -> None:
         self._http.close()
 
+    def list_documents(
+        self,
+        *,
+        dataset_id: Optional[str] = None,
+        page: int = 1,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        dataset = (dataset_id or self._config.dataset_id).strip() if (dataset_id or self._config.dataset_id) else ""
+        if not dataset:
+            raise DifyError("Missing Dify dataset id (set DIFY_DATASET_ID or per-call dataset_id)")
+        if not self._config.service_api_key:
+            raise DifyError("Missing DIFY_SERVICE_API_KEY")
+        page = max(1, int(page or 1))
+        limit = max(1, min(int(limit or 20), 100))
+
+        return self._http._request(
+            "GET",
+            f"/datasets/{dataset}/documents",
+            api_key=self._config.service_api_key,
+            params={"page": page, "limit": limit},
+        )
+
+    def retrieve(
+        self,
+        *,
+        dataset_id: Optional[str] = None,
+        query: str,
+        top_k: int = 5,
+        score_threshold: Optional[float] = None,
+    ) -> dict[str, Any]:
+        dataset = (dataset_id or self._config.dataset_id).strip() if (dataset_id or self._config.dataset_id) else ""
+        if not dataset:
+            raise DifyError("Missing Dify dataset id (set DIFY_DATASET_ID or per-call dataset_id)")
+        if not self._config.service_api_key:
+            raise DifyError("Missing DIFY_SERVICE_API_KEY")
+
+        payload: dict[str, Any] = {
+            "query": query,
+            "top_k": max(1, int(top_k or 5)),
+        }
+        if score_threshold is not None:
+            payload["score_threshold"] = float(score_threshold)
+
+        return self._http._request(
+            "POST",
+            f"/datasets/{dataset}/retrieve",
+            api_key=self._config.service_api_key,
+            json=payload,
+        )
+
     def create_document_by_text(
         self,
         *,
