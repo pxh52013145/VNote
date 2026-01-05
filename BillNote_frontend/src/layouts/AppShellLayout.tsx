@@ -51,7 +51,7 @@ const AppShellLayout = () => {
         <AppSidebar isOpen={isSidebarOpen} toggleOpen={toggleSidebar} />
       </ResizablePanel>
 
-      <ResizableHandle withHandle />
+      <ResizableHandle withHandle className="z-30" />
 
       <ResizablePanel defaultSize={82} minSize={40}>
         <main className="flex h-full w-full flex-col overflow-hidden transition-all duration-300">
