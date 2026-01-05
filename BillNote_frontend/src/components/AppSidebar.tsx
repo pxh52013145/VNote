@@ -14,7 +14,7 @@ const AppSidebar = ({ isOpen, toggleOpen }: AppSidebarProps) => {
     <aside
       className={[
         'bg-slate-900 text-white flex flex-col border-r border-slate-800 transition-all duration-300 ease-in-out relative z-20',
-        isOpen ? 'w-64' : 'w-16',
+        'w-full min-w-0',
       ].join(' ')}
     >
       <div className="h-16 flex items-center px-4 border-b border-slate-800/50">
@@ -115,4 +115,3 @@ const AppSidebar = ({ isOpen, toggleOpen }: AppSidebarProps) => {
 }
 
 export default AppSidebar
-

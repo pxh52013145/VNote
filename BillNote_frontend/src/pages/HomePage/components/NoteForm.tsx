@@ -442,19 +442,21 @@ const NoteForm = () => {
             continue
           }
 
-          const shouldRegenerate =
-            duplicateStrategy === 'regenerate' ||
-            (duplicateStrategy === 'ask' &&
-              window.confirm(
-                `检测到该视频已在库中：\n${title}\n\n是否重新生成并入库？\n\n确定：重新生成\n取消：仍然新建任务`
-              ))
-
-          if (shouldRegenerate) {
-            await retryTask(existingTaskId, formData as any)
-            updateBatchItem(item.id, { status: 'success', taskId: existingTaskId })
-            succeeded += 1
-            continue
+          if (duplicateStrategy === 'ask') {
+            const shouldRegenerate = window.confirm(
+              `检测到该视频已在库中：\n${title}\n\n是否重新生成并覆盖原任务？\n\n确定：重新生成并覆盖\n取消：跳过该条`
+            )
+            if (!shouldRegenerate) {
+              updateBatchItem(item.id, { status: 'skipped', taskId: existingTaskId })
+              skipped += 1
+              continue
+            }
           }
+
+          await retryTask(existingTaskId, formData as any)
+          updateBatchItem(item.id, { status: 'success', taskId: existingTaskId })
+          succeeded += 1
+          continue
         }
 
         const resp = await generateNote(formData as any, { silent: true })

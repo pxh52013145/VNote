@@ -102,6 +102,32 @@ const parseTimestampToSeconds = (text: string): number | null => {
   return Math.floor(hours * 3600 + minutes * 60 + seconds)
 }
 
+const getPlainText = (node: any): string => {
+  if (node == null) return ''
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(getPlainText).join('')
+  if (typeof node === 'object' && 'props' in node) return getPlainText((node as any).props?.children)
+  return ''
+}
+
+const extractOriginTimeSeconds = (text: string): number | null => {
+  const raw = String(text || '')
+  const patterns: RegExp[] = [
+    /Content-\[\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*]/i,
+    /原片\s*@\s*(\d{1,2}:\d{2}(?::\d{2})?)/,
+    /原文\s*@\s*(\d{1,2}:\d{2}(?::\d{2})?)/,
+  ]
+
+  for (const re of patterns) {
+    const match = raw.match(re)
+    if (!match?.[1]) continue
+    const parsed = parseTimestampToSeconds(match[1])
+    if (parsed != null) return parsed
+  }
+
+  return null
+}
+
 const MarkdownViewer: FC<MarkdownViewerProps> = ({ status }) => {
   const [copied, setCopied] = useState(false)
   const [currentVerId, setCurrentVerId] = useState<string>('')
@@ -177,20 +203,31 @@ const MarkdownViewer: FC<MarkdownViewerProps> = ({ status }) => {
       <div
         className={
           docked
-            ? 'h-full w-full'
+            ? 'relative h-full w-full'
             : 'fixed left-0 top-0 z-50 h-screen w-80 bg-white shadow-xl lg:w-96'
         }
       >
-        <div className="relative h-full w-full">
+        {docked && (
           <button
             type="button"
             aria-label="关闭原文参照"
             onClick={() => handleShowTranscribeChange(false)}
-            className="absolute right-3 top-3 z-10 rounded-md bg-white/90 p-1.5 text-slate-600 shadow-sm ring-1 ring-slate-200 hover:bg-white hover:text-slate-900"
-          >
-            <X className="h-4 w-4" />
-          </button>
-          <TranscriptViewer seekSeconds={transcriptSeekSeconds} seekNonce={transcriptSeekNonce} />
+            className="absolute inset-0 z-0 h-full w-full cursor-default bg-slate-900/35 backdrop-blur-[1px]"
+          />
+        )}
+
+        <div className={docked ? 'absolute inset-4 z-10 flex' : 'relative h-full w-full'}>
+          <div className="relative h-full w-full">
+            <button
+              type="button"
+              aria-label="关闭原文参照"
+              onClick={() => handleShowTranscribeChange(false)}
+              className="absolute right-3 top-3 z-10 rounded-md bg-white/90 p-1.5 text-slate-600 shadow-sm ring-1 ring-slate-200 hover:bg-white hover:text-slate-900"
+            >
+              <X className="h-4 w-4" />
+            </button>
+            <TranscriptViewer seekSeconds={transcriptSeekSeconds} seekNonce={transcriptSeekNonce} />
+          </div>
         </div>
       </div>,
       portalTarget
@@ -374,6 +411,9 @@ const MarkdownViewer: FC<MarkdownViewerProps> = ({ status }) => {
                       h1: ({ children, ...props }) => (
                         <h1
                           className="text-primary my-6 scroll-m-20 text-3xl font-extrabold tracking-tight lg:text-4xl"
+                          data-origin-time-seconds={
+                            extractOriginTimeSeconds(getPlainText(children)) ?? undefined
+                          }
                           {...props}
                         >
                           {children}
@@ -382,6 +422,9 @@ const MarkdownViewer: FC<MarkdownViewerProps> = ({ status }) => {
                       h2: ({ children, ...props }) => (
                         <h2
                           className="text-primary mt-10 mb-4 scroll-m-20 border-b pb-2 text-2xl font-semibold tracking-tight first:mt-0"
+                          data-origin-time-seconds={
+                            extractOriginTimeSeconds(getPlainText(children)) ?? undefined
+                          }
                           {...props}
                         >
                           {children}
@@ -390,6 +433,9 @@ const MarkdownViewer: FC<MarkdownViewerProps> = ({ status }) => {
                       h3: ({ children, ...props }) => (
                         <h3
                           className="text-primary mt-8 mb-4 scroll-m-20 text-xl font-semibold tracking-tight"
+                          data-origin-time-seconds={
+                            extractOriginTimeSeconds(getPlainText(children)) ?? undefined
+                          }
                           {...props}
                         >
                           {children}
@@ -398,6 +444,9 @@ const MarkdownViewer: FC<MarkdownViewerProps> = ({ status }) => {
                       h4: ({ children, ...props }) => (
                         <h4
                           className="text-primary mt-6 mb-2 scroll-m-20 text-lg font-semibold tracking-tight"
+                          data-origin-time-seconds={
+                            extractOriginTimeSeconds(getPlainText(children)) ?? undefined
+                          }
                           {...props}
                         >
                           {children}
@@ -414,13 +463,6 @@ const MarkdownViewer: FC<MarkdownViewerProps> = ({ status }) => {
                       // Enhanced links with special handling for "原片" links
                       a: ({ href, children, onClick, ...props }) => {
                         const isHashLink = typeof href === 'string' && href.startsWith('#') && href.length > 1
-                        const getPlainText = (node: any): string => {
-                          if (node == null) return ''
-                          if (typeof node === 'string' || typeof node === 'number') return String(node)
-                          if (Array.isArray(node)) return node.map(getPlainText).join('')
-                          if (typeof node === 'object' && 'props' in node) return getPlainText((node as any).props?.children)
-                          return ''
-                        }
                         const normalizeText = (text: string) =>
                           (text || '')
                             .toLowerCase()
