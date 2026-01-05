@@ -1,7 +1,8 @@
-import { useState, useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import ReactMarkdown from 'react-markdown'
 import { Button } from '@/components/ui/button.tsx'
-import { Copy, Download, ArrowRight, Play, ExternalLink } from 'lucide-react'
+import { Copy, Download, ArrowRight, Play, ExternalLink, X } from 'lucide-react'
 import { toast } from 'react-hot-toast'
 import Error from '@/components/Lottie/error.tsx'
 import Loading from '@/components/Lottie/Loading.tsx'
@@ -80,6 +81,27 @@ const getStatusProgress = (status: string) => {
   return Math.max(0, Math.min(100, Math.round(v)))
 }
 
+const parseTimestampToSeconds = (text: string): number | null => {
+  const trimmed = (text || '').trim()
+  if (!trimmed) return null
+
+  const parts = trimmed.split(':').map(p => p.trim())
+  if (parts.length !== 2 && parts.length !== 3) return null
+
+  const nums = parts.map(p => Number(p))
+  if (nums.some(n => !Number.isFinite(n) || n < 0)) return null
+
+  if (nums.length === 2) {
+    const [minutes, seconds] = nums
+    if (seconds >= 60) return null
+    return Math.floor(minutes * 60 + seconds)
+  }
+
+  const [hours, minutes, seconds] = nums
+  if (minutes >= 60 || seconds >= 60) return null
+  return Math.floor(hours * 3600 + minutes * 60 + seconds)
+}
+
 const MarkdownViewer: FC<MarkdownViewerProps> = ({ status }) => {
   const [copied, setCopied] = useState(false)
   const [currentVerId, setCurrentVerId] = useState<string>('')
@@ -87,6 +109,9 @@ const MarkdownViewer: FC<MarkdownViewerProps> = ({ status }) => {
   const [modelName, setModelName] = useState<string>('')
   const [style, setStyle] = useState<string>('')
   const [createTime, setCreateTime] = useState<string>('')
+  const markdownScrollAreaRef = useRef<HTMLDivElement>(null)
+  const [transcriptSeekSeconds, setTranscriptSeekSeconds] = useState<number>(0)
+  const [transcriptSeekNonce, setTranscriptSeekNonce] = useState<number>(0)
   // 确保baseURL没有尾部斜杠
   const baseURL = (String(import.meta.env.VITE_API_BASE_URL || '').replace('/api','') || '').replace(/\/$/, '')
   const getCurrentTask = useTaskStore.getState().getCurrentTask
@@ -101,6 +126,76 @@ const MarkdownViewer: FC<MarkdownViewerProps> = ({ status }) => {
   const [showTranscribe, setShowTranscribe] = useState(false)
   const [viewMode, setViewMode] = useState<'map' | 'preview'>('preview')
   const svgRef = useRef<SVGSVGElement>(null)
+
+  const getCurrentMarkdownTimestampSeconds = () => {
+    const viewport = markdownScrollAreaRef.current?.querySelector<HTMLElement>(
+      '[data-slot="scroll-area-viewport"]'
+    )
+    if (!viewport) return 0
+
+    const markers = Array.from(
+      viewport.querySelectorAll<HTMLElement>('[data-origin-time-seconds]')
+    )
+    if (markers.length === 0) return 0
+
+    const viewportRectTop = viewport.getBoundingClientRect().top
+    const anchorY = viewport.scrollTop + viewport.clientHeight * 0.25
+
+    let pickedSeconds = 0
+    let pickedTop = -Infinity
+    for (const marker of markers) {
+      const seconds = Number(marker.dataset.originTimeSeconds)
+      if (!Number.isFinite(seconds)) continue
+
+      const top = marker.getBoundingClientRect().top - viewportRectTop + viewport.scrollTop
+      if (top <= anchorY && top >= pickedTop) {
+        pickedSeconds = seconds
+        pickedTop = top
+      }
+    }
+
+    return pickedSeconds
+  }
+
+  const handleShowTranscribeChange = (open: boolean) => {
+    if (open) {
+      setTranscriptSeekSeconds(getCurrentMarkdownTimestampSeconds())
+      setTranscriptSeekNonce(n => n + 1)
+    }
+    setShowTranscribe(open)
+  }
+
+  const renderTranscriptPanel = () => {
+    if (!showTranscribe) return null
+    if (typeof document === 'undefined') return null
+
+    const dockEl = document.getElementById('transcript-dock')
+    const portalTarget = dockEl ?? document.body
+    const docked = Boolean(dockEl)
+
+    return createPortal(
+      <div
+        className={
+          docked
+            ? 'h-full w-full'
+            : 'fixed left-0 top-0 z-50 h-screen w-80 bg-white shadow-xl lg:w-96'
+        }
+      >
+        <div className="relative h-full w-full">
+          <button
+            type="button"
+            aria-label="关闭原文参照"
+            onClick={() => handleShowTranscribeChange(false)}
+            className="absolute right-3 top-3 z-10 rounded-md bg-white/90 p-1.5 text-slate-600 shadow-sm ring-1 ring-slate-200 hover:bg-white hover:text-slate-900"
+          >
+            <X className="h-4 w-4" />
+          </button>
+          <TranscriptViewer seekSeconds={transcriptSeekSeconds} seekNonce={transcriptSeekNonce} />
+        </div>
+      </div>,
+      portalTarget
+    )
+  }
   // 多版本内容处理
   useEffect(() => {
     if (!currentTask) return
@@ -248,10 +343,11 @@ const MarkdownViewer: FC<MarkdownViewerProps> = ({ status }) => {
         onDownload={handleDownload}
         createAt={createTime}
         showTranscribe={showTranscribe}
-        setShowTranscribe={setShowTranscribe}
+        setShowTranscribe={handleShowTranscribeChange}
         viewMode={viewMode}
         setViewMode={setViewMode}
       />
+      {renderTranscriptPanel()}
 
       {viewMode === 'map' ? (
         <div className="flex w-full flex-1 overflow-hidden bg-white">
@@ -268,7 +364,7 @@ const MarkdownViewer: FC<MarkdownViewerProps> = ({ status }) => {
         <div className="flex flex-1 overflow-hidden bg-white py-2">
           {selectedContent && selectedContent !== 'loading' && selectedContent !== 'empty' ? (
             <>
-              <ScrollArea className="w-full">
+              <ScrollArea ref={markdownScrollAreaRef} className="w-full">
                 <div className={'markdown-body w-full px-2'}>
                   <ReactMarkdown
                     remarkPlugins={[gfm, remarkMath]}
@@ -318,9 +414,6 @@ const MarkdownViewer: FC<MarkdownViewerProps> = ({ status }) => {
                       // Enhanced links with special handling for "原片" links
                       a: ({ href, children, onClick, ...props }) => {
                         const isHashLink = typeof href === 'string' && href.startsWith('#') && href.length > 1
-                        const isOriginLink =
-                          typeof children[0] === 'string' &&
-                          (children[0] as string).startsWith('原片 @')
                         const getPlainText = (node: any): string => {
                           if (node == null) return ''
                           if (typeof node === 'string' || typeof node === 'number') return String(node)
@@ -334,12 +427,18 @@ const MarkdownViewer: FC<MarkdownViewerProps> = ({ status }) => {
                             .replace(/\s+/g, ' ')
                             .trim()
 
-                        if (isOriginLink) {
-                          const timeMatch = (children[0] as string).match(/原片 @ (\d{2}:\d{2})/)
-                          const timeText = timeMatch ? timeMatch[1] : '原片'
+                        const originText = getPlainText(children)
+                        const originTimeMatch = originText.match(/原片\s*@\s*(\d{1,2}:\d{2}(?::\d{2})?)/)
+
+                        if (originTimeMatch) {
+                          const timeText = originTimeMatch[1]
+                          const timeSeconds = parseTimestampToSeconds(timeText) ?? 0
 
                           return (
-                            <span className="origin-link my-2 inline-flex">
+                            <span
+                              className="origin-link my-2 inline-flex"
+                              data-origin-time-seconds={timeSeconds}
+                            >
                               <a
                                 href={href}
                                 target="_blank"
@@ -348,7 +447,7 @@ const MarkdownViewer: FC<MarkdownViewerProps> = ({ status }) => {
                                 {...props}
                               >
                                 <Play className="h-3.5 w-3.5" />
-                                <span>原片（{timeText}）</span>
+                                <span>原片{timeText ? `（${timeText}）` : ''}</span>
                               </a>
                             </span>
                           )
@@ -573,11 +672,6 @@ const MarkdownViewer: FC<MarkdownViewerProps> = ({ status }) => {
                   </ReactMarkdown>
                 </div>
               </ScrollArea>
-              {showTranscribe && (
-                <div className={'ml-2 w-2/4'}>
-                  <TranscriptViewer />
-                </div>
-              )}
             </>
           ) : (
             <div className="flex h-full w-full items-center justify-center">

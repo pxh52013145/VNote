@@ -27,7 +27,10 @@ interface NoteHeaderProps {
   onCopy: () => void
   onDownload: () => void
   createAt?: string | Date
+  showTranscribe: boolean
   setShowTranscribe: (show: boolean) => void
+  viewMode: 'map' | 'preview'
+  setViewMode: (mode: 'map' | 'preview') => void
 }
 
 export function MarkdownHeader({
@@ -170,7 +173,7 @@ export function MarkdownHeader({
             <TooltipTrigger asChild>
               <Button
                 onClick={() => {
-                  setShowTranscribe(!showTranscribe)
+                  setShowTranscribe(true)
                 }}
                 variant="ghost"
                 size="sm"

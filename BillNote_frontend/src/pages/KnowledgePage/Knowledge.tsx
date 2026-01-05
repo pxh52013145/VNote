@@ -68,7 +68,7 @@ const KnowledgePage = () => {
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto">
+        <div className="relative flex-1 overflow-y-auto">
           <div className="p-4 space-y-2">
             <div className="pb-2">
               <div className="relative">
@@ -123,6 +123,10 @@ const KnowledgePage = () => {
               })
             )}
           </div>
+          <div
+            id="transcript-dock"
+            className="empty:hidden absolute inset-0 z-20"
+          />
         </div>
       </div>
 
