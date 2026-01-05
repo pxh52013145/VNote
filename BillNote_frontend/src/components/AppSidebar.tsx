@@ -13,7 +13,7 @@ const AppSidebar = ({ isOpen, toggleOpen }: AppSidebarProps) => {
   return (
     <aside
       className={[
-        'bg-slate-900 text-white flex flex-col border-r border-slate-800 transition-all duration-300 ease-in-out relative',
+        'bg-slate-900 text-white flex h-full flex-col border-r border-slate-800 transition-all duration-300 ease-in-out relative',
         'w-full min-w-0',
       ].join(' ')}
     >
