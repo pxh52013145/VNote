@@ -1,5 +1,6 @@
 from app.db.engine import get_db
 from app.db.models.models import Model
+from sqlalchemy import text
 
 
 def get_model_by_provider_and_name(provider_id: int, model_name: str):
@@ -63,5 +64,25 @@ def get_all_models():
             {"id": m.id, "provider_id": m.provider_id, "model_name": m.model_name}
             for m in models
         ]
+    finally:
+        db.close()
+
+
+def delete_models_by_provider(provider_id: str | int) -> int:
+    """
+    Delete all models for a provider.
+
+    Note: the schema currently uses an Integer column for provider_id, but SQLite
+    may store string ids; raw SQL keeps this compatible.
+    """
+    db = next(get_db())
+    try:
+        result = db.execute(
+            text("DELETE FROM models WHERE provider_id = :provider_id"),
+            {"provider_id": provider_id},
+        )
+        db.commit()
+        # SQLAlchemy result.rowcount may be -1 for some DBs/drivers.
+        return int(result.rowcount or 0)
     finally:
         db.close()

@@ -1,9 +1,11 @@
 from abc import ABC
 import os
+from typing import Callable, Optional
 
 from app.decorators.timeit import timeit
 from app.models.transcriber_model import TranscriptResult, TranscriptSegment
 from app.services.provider import ProviderService
+from app.services.task_manager import TaskCancelledError
 from app.transcriber.base import Transcriber
 from openai import OpenAI
 import ffmpeg
@@ -22,12 +24,26 @@ class GroqTranscriber(Transcriber, ABC):
 
 
     @timeit
-    def transcript(self, file_path: str) -> TranscriptResult:
+    def transcript(
+        self,
+        file_path: str,
+        *,
+        total_duration: Optional[float] = None,
+        on_progress: Optional[Callable[[float], None]] = None,
+        should_cancel: Optional[Callable[[], bool]] = None,
+    ) -> TranscriptResult:
+        if should_cancel and should_cancel():
+            raise TaskCancelledError("Task cancelled")
+
         file_size = os.path.getsize(file_path)
         if file_size > MAX_SIZE_BYTES:
             print(f"文件超过 {MAX_SIZE_MB}MB，开始压缩（当前 {round(file_size / (1024 * 1024), 2)}MB）...")
             file_path = compress_audio(file_path)
             print(f"压缩完成，临时路径：{file_path}")
+
+        if should_cancel and should_cancel():
+            raise TaskCancelledError("Task cancelled")
+
         provider = ProviderService.get_provider_by_id('groq')
 
 

@@ -43,9 +43,10 @@ export const generateNote = async (data: {
   }
 }
 
-export const delete_task = async ({ video_id, platform }) => {
+export const delete_task = async ({ task_id, video_id, platform }) => {
   try {
     const data = {
+      task_id,
       video_id,
       platform,
     }
@@ -73,5 +74,25 @@ export const get_task_status = async (task_id: string) => {
     toast.error('笔记生成失败，请稍后重试')
 
     throw e // 抛出错误以便调用方处理
+  }
+}
+
+export const reingest_dify = async (
+  data: {
+    task_id: string
+    video_url?: string
+    platform?: string
+    include_transcript?: boolean
+    include_note?: boolean
+  },
+  opts?: { silent?: boolean }
+) => {
+  try {
+    const response = await request.post('/reingest_dify', data)
+    if (!opts?.silent) toast.success('已重新提交入库')
+    return response
+  } catch (e) {
+    if (!opts?.silent) toast.error('重新入库失败')
+    throw e
   }
 }

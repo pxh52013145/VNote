@@ -55,11 +55,10 @@ interface IModel {
   root: string
 }
 const ProviderForm = ({ isCreate = false }: { isCreate?: boolean }) => {
-  let { id } = useParams()
+  const { id } = useParams()
   const navigate = useNavigate()
   const isEditMode = !isCreate
 
-  const getProviderById = useProviderStore(state => state.getProviderById)
   const loadProviderById = useProviderStore(state => state.loadProviderById)
   const updateProvider = useProviderStore(state => state.updateProvider)
   const addNewProvider = useProviderStore(state => state.addNewProvider)
@@ -103,6 +102,10 @@ const ProviderForm = ({ isCreate = false }: { isCreate?: boolean }) => {
       if (isEditMode) {
 
         const data = await loadProviderById(id!)
+        if (!data) {
+          setLoading(false)
+          return
+        }
         providerForm.reset(data)
         setIsBuiltIn(data.type === 'built-in')
       } else {
@@ -114,11 +117,13 @@ const ProviderForm = ({ isCreate = false }: { isCreate?: boolean }) => {
         })
         setIsBuiltIn(false)
       }
-      const models = await loadModelsById(id!)
+      if (id) {
+        const models = await loadModelsById(id)
       if(models){
         console.log('🔧 模型列表:', models)
         setModels(models)
 
+      }
       }
       setLoading(false)
     }
@@ -145,20 +150,25 @@ const ProviderForm = ({ isCreate = false }: { isCreate?: boolean }) => {
       return
     }
     try {
-      if (!id){
-        toast.error('请先保存供应商信息')
-        return
-      }
       setTesting(true)
-     await testConnection({
-             id
-          })
+      await testConnection({
+        id,
+        api_key: values.apiKey,
+        base_url: values.baseUrl,
+      })
 
-        toast.success('测试连通性成功 🎉')
+      toast.success('测试连通性成功 🎉')
 
     } catch (error) {
-
-      toast.error(`连接失败: ${data.data.msg || '未知错误'}`)
+      const msg = (() => {
+        if (typeof error === 'object' && error && 'msg' in error) {
+          const maybeMsg = (error as { msg?: unknown }).msg
+          if (typeof maybeMsg === 'string' && maybeMsg) return maybeMsg
+        }
+        if (error instanceof Error) return error.message
+        return '未知错误'
+      })()
+      toast.error(`连接失败: ${msg}`)
       // toast.error('测试连通性异常')
     } finally {
       setTesting(false)
@@ -192,10 +202,14 @@ const ProviderForm = ({ isCreate = false }: { isCreate?: boolean }) => {
   // 保存Provider信息
   const onProviderSubmit = async (values: ProviderFormValues) => {
     if (isEditMode) {
-      await updateProvider({ ...values, id: id! })
+      if (!id) return
+      await updateProvider({ ...values, id })
+      providerForm.reset(values)
       toast.success('更新供应商成功')
     } else {
-       id = await addNewProvider({ ...values })
+      const newId = await addNewProvider({ ...values })
+      if (!newId) return
+      navigate(`/settings/model/${newId}`, { replace: true })
 
       toast.success('新增供应商成功')
     }

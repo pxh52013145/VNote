@@ -2,7 +2,7 @@ import { useTaskStore } from '@/store/taskStore'
 import { ScrollArea } from '@/components/ui/scroll-area.tsx'
 import { Badge } from '@/components/ui/badge.tsx'
 import { cn } from '@/lib/utils.ts'
-import { Trash } from 'lucide-react'
+import { RotateCcw, Trash } from 'lucide-react'
 import { Button } from '@/components/ui/button.tsx'
 import PinyinMatch from 'pinyin-match'
 import Fuse from 'fuse.js'
@@ -74,6 +74,7 @@ const getStatusLabel = (status: string) => {
     SAVING: '保存中',
     SUCCESS: '已完成',
     FAILED: '失败',
+    CANCELLED: '已取消',
   }
   return map[status] || status
 }
@@ -92,6 +93,7 @@ const getTaskProgress = (task: any) => {
     SAVING: 97,
     SUCCESS: 100,
     FAILED: 0,
+    CANCELLED: 0,
   }
   return clamp(map[task?.status] ?? 0)
 }
@@ -115,10 +117,12 @@ const getDifyTag = (task: any) => {
 const NoteHistory: FC<NoteHistoryProps> = ({ onSelect, selectedId }) => {
   const tasks = useTaskStore(state => state.tasks)
   const removeTask = useTaskStore(state => state.removeTask)
+  const reingestTask = useTaskStore(state => state.reingestTask)
   // 确保baseURL没有尾部斜杠
   const baseURL = (String(import.meta.env.VITE_API_BASE_URL || 'api')).replace(/\/$/, '')
   const [rawSearch, setRawSearch] = useState('')
   const [search, setSearch] = useState('')
+  const [reingestingId, setReingestingId] = useState<string | null>(null)
   const fuse = new Fuse(tasks, {
     keys: ['audioMeta.title'],
     threshold: 0.4 // 匹配精度（越低越严格）
@@ -169,13 +173,19 @@ const NoteHistory: FC<NoteHistoryProps> = ({ onSelect, selectedId }) => {
       <div className="flex flex-col gap-2 overflow-hidden">
         {filteredTasks.map(task => {
           const difyTag = getDifyTag(task)
-          const isGenerating = task.status !== 'SUCCESS' && task.status !== 'FAILED'
+          const isGenerating = task.status !== 'SUCCESS' && task.status !== 'FAILED' && task.status !== 'CANCELLED'
           const isUploading = task.status === 'SUCCESS' && !task.dify_error && !task?.dify?.batch
           const isIndexing =
             task.status === 'SUCCESS' &&
             !task.dify_error &&
             !!task?.dify?.batch &&
             !isDifyIndexingCompleted(task?.dify_indexing)
+          const hasMarkdown = Array.isArray(task.markdown)
+            ? task.markdown.length > 0
+            : Boolean(String(task.markdown || '').trim())
+          const generationFinished =
+            task.status === 'SUCCESS' || task.status === 'FAILED' || task.status === 'CANCELLED'
+          const canReingest = generationFinished && hasMarkdown && !isDifyIndexingCompleted(task?.dify_indexing)
           const generationProgress = getTaskProgress(task)
           const indexingProgress = getDifyIndexingProgress(task?.dify_indexing)
           return (
@@ -273,7 +283,7 @@ const NoteHistory: FC<NoteHistoryProps> = ({ onSelect, selectedId }) => {
                     已完成
                   </div>
                 )}
-                {task.status !== 'SUCCESS' && task.status !== 'FAILED' ? (
+                {task.status !== 'SUCCESS' && task.status !== 'FAILED' && task.status !== 'CANCELLED' ? (
                   <div className={'w-10 rounded bg-green-500 p-0.5 text-center text-white'}>
                     等待中
                   </div>
@@ -282,6 +292,9 @@ const NoteHistory: FC<NoteHistoryProps> = ({ onSelect, selectedId }) => {
                 )}
                 {task.status === 'FAILED' && (
                   <div className={'w-10 rounded bg-red-500 p-0.5 text-center text-white'}>失败</div>
+                )}
+                {task.status === 'CANCELLED' && (
+                  <div className={'w-10 rounded bg-neutral-400 p-0.5 text-center text-white'}>已取消</div>
                 )}
                 {difyTag && (
                   <div className={cn('rounded border px-2 py-0.5 text-center', difyTag.className)}>
@@ -292,6 +305,34 @@ const NoteHistory: FC<NoteHistoryProps> = ({ onSelect, selectedId }) => {
 
               <div>
                 <TooltipProvider>
+                  {canReingest && (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          type="button"
+                          size="small"
+                          variant="ghost"
+                          disabled={reingestingId === task.id}
+                          onClick={async e => {
+                            e.stopPropagation()
+                            if (reingestingId) return
+                            try {
+                              setReingestingId(task.id)
+                              await reingestTask(task.id)
+                            } finally {
+                              setReingestingId(null)
+                            }
+                          }}
+                          className="shrink-0"
+                        >
+                          <RotateCcw className="text-muted-foreground h-4 w-4" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        <p>重新入库</p>
+                      </TooltipContent>
+                    </Tooltip>
+                  )}
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button

@@ -61,6 +61,7 @@ const getStatusLabel = (status: string) => {
     SAVING: '保存中',
     SUCCESS: '已完成',
     FAILED: '失败',
+    CANCELLED: '已取消',
   }
   return map[status] || status
 }
@@ -76,6 +77,7 @@ const getStatusProgress = (status: string) => {
     SAVING: 97,
     SUCCESS: 100,
     FAILED: 0,
+    CANCELLED: 0,
   }
   const v = map[status] ?? 0
   return Math.max(0, Math.min(100, Math.round(v)))

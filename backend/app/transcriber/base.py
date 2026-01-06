@@ -1,11 +1,19 @@
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 
 from app.models.transcriber_model import TranscriptResult
 
 
 class Transcriber(ABC):
     @abstractmethod
-    def transcript(self,file_path:str)->TranscriptResult:
+    def transcript(
+        self,
+        file_path: str,
+        *,
+        total_duration: float | None = None,
+        on_progress: Callable[[float], None] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> TranscriptResult:
         '''
 
         :param file_path:音频路径

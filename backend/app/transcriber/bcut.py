@@ -1,12 +1,13 @@
 import json
 import logging
 import time
-from typing import Optional, List, Dict, Union
+from typing import Callable, Optional, List, Dict, Union
 
 import requests
 
 from app.decorators.timeit import timeit
 from app.models.transcriber_model import TranscriptSegment, TranscriptResult
+from app.services.task_manager import TaskCancelledError
 from app.transcriber.base import Transcriber
 from app.utils.logger import get_logger
 from events import transcription_finished
@@ -167,10 +168,20 @@ class BcutTranscriber(Transcriber):
         return resp["data"]
 
     @timeit
-    def transcript(self, file_path: str) -> TranscriptResult:
+    def transcript(
+        self,
+        file_path: str,
+        *,
+        total_duration: float | None = None,
+        on_progress: Callable[[float], None] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> TranscriptResult:
         """执行识别过程，符合 Transcriber 接口"""
         try:
             logger.info(f"开始处理文件: {file_path}")
+
+            if should_cancel and should_cancel():
+                raise TaskCancelledError("Task cancelled")
             
             # 上传文件
             logger.info("正在上传文件...")
@@ -185,6 +196,9 @@ class BcutTranscriber(Transcriber):
             task_resp = None
             max_retries = 500
             for i in range(max_retries):
+                if should_cancel and should_cancel():
+                    raise TaskCancelledError("Task cancelled")
+
                 task_resp = self._query_result()
                 
                 if task_resp["state"] == 4:  # 完成状态

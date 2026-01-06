@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import List, Optional, Tuple, Union, Any
@@ -30,6 +31,7 @@ from app.models.notes_model import AudioDownloadResult, NoteResult
 from app.models.transcriber_model import TranscriptResult, TranscriptSegment
 from app.services.constant import SUPPORT_PLATFORM_MAP
 from app.services.provider import ProviderService
+from app.services.task_manager import TaskCancelledError, task_manager
 from app.transcriber.base import Transcriber
 from app.transcriber.transcriber_provider import get_transcriber, _transcribers
 from app.utils.note_helper import replace_content_markers
@@ -57,6 +59,26 @@ IMAGE_BASE_URL = os.getenv("IMAGE_BASE_URL", "/static/screenshots")
 # 日志配置
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
+
+def _probe_media_duration_seconds(path: str) -> Optional[float]:
+    try:
+        import av  # type: ignore
+    except Exception:
+        return None
+
+    try:
+        with av.open(path) as container:
+            if container.duration:
+                return float(container.duration / av.time_base)
+
+            for stream in container.streams:
+                if stream.duration and stream.time_base:
+                    return float(stream.duration * stream.time_base)
+    except Exception:
+        return None
+
+    return None
 
 
 class NoteGenerator:
@@ -147,12 +169,19 @@ class NoteGenerator:
                 grid_size=grid_size,
             )
 
+            if task_manager.is_cancelled(task_id):
+                raise TaskCancelledError("Task cancelled")
+
             # 2. 转写文字
             transcript = self._transcribe_audio(
                 audio_file=audio_meta.file_path,
                 transcript_cache_file=transcript_cache_file,
                 status_phase=TaskStatus.TRANSCRIBING,
+                total_duration_seconds=audio_meta.duration,
             )
+
+            if task_manager.is_cancelled(task_id):
+                raise TaskCancelledError("Task cancelled")
 
             # 3. GPT 总结
             markdown = self._summarize_text(
@@ -167,6 +196,9 @@ class NoteGenerator:
                 extras=extras,
                 video_img_urls=self.video_img_urls,
             )
+
+            if task_manager.is_cancelled(task_id):
+                raise TaskCancelledError("Task cancelled")
 
             # 4. 截图 & 链接替换
             if _format:
@@ -187,6 +219,10 @@ class NoteGenerator:
             logger.info(f"笔记生成成功 (task_id={task_id})")
             return NoteResult(markdown=markdown, transcript=transcript, audio_meta=audio_meta)
 
+        except TaskCancelledError as exc:
+            logger.info(f"任务已取消 (task_id={task_id})")
+            self._update_status(task_id, TaskStatus.CANCELLED, message=str(exc) or "任务已取消")
+            return None
         except Exception as exc:
             logger.error(f"生成笔记流程异常 (task_id={task_id})：{exc}", exc_info=True)
             self._update_status(task_id, TaskStatus.FAILED, message=str(exc))
@@ -261,7 +297,15 @@ class NoteGenerator:
         logger.info(f"使用下载器：{downloader_cls.__class__}")
         return instance
 
-    def _update_status(self, task_id: Optional[str], status: Union[str, TaskStatus], message: Optional[str] = None):
+    def _update_status(
+        self,
+        task_id: Optional[str],
+        status: Union[str, TaskStatus],
+        message: Optional[str] = None,
+        *,
+        progress: Optional[int] = None,
+        extra: Optional[dict[str, Any]] = None,
+    ):
         """
         创建或更新 {task_id}.status.json，记录当前任务状态
 
@@ -276,21 +320,35 @@ class NoteGenerator:
         status_file = NOTE_OUTPUT_DIR / f"{task_id}.status.json"
         print(f"写入状态文件: {status_file} 当前状态: {status}")
         normalized_status = status.value if isinstance(status, TaskStatus) else str(status)
-        progress = TaskStatus.progress(status)
-        if normalized_status == TaskStatus.FAILED.value and status_file.exists():
+
+        existing: dict[str, Any] = {}
+        if status_file.exists():
             try:
                 existing = json.loads(status_file.read_text(encoding="utf-8"))
-                existing_progress = existing.get("progress")
+            except Exception:
+                existing = {}
+
+        computed_progress = int(progress) if isinstance(progress, (int, float)) else TaskStatus.progress(status)
+        if normalized_status in (TaskStatus.FAILED.value, TaskStatus.CANCELLED.value) and status_file.exists():
+            try:
+                existing_progress = existing.get("progress") if isinstance(existing, dict) else None
                 if isinstance(existing_progress, (int, float)):
-                    progress = int(existing_progress)
+                    computed_progress = int(existing_progress)
             except Exception:
                 pass
+
         data = {
+            **(existing if isinstance(existing, dict) else {}),
             "status": normalized_status,
-            "progress": max(0, min(100, int(progress))),
+            "progress": max(0, min(100, int(computed_progress))),
         }
         if message:
             data["message"] = message
+        else:
+            data.pop("message", None)
+
+        if extra and isinstance(extra, dict):
+            data.update(extra)
 
         try:
             # First create a temporary file
@@ -356,6 +414,8 @@ class NoteGenerator:
         :return: AudioDownloadResult 对象
         """
         task_id = audio_cache_file.stem.split("_")[0]
+        if task_manager.is_cancelled(task_id):
+            raise TaskCancelledError("Task cancelled")
         self._update_status(task_id, status_phase)
 
 
@@ -365,6 +425,8 @@ class NoteGenerator:
         if need_video:
             try:
                 logger.info("开始下载视频")
+                if task_manager.is_cancelled(task_id):
+                    raise TaskCancelledError("Task cancelled")
                 video_path_str = downloader.download_video(video_url)
                 self.video_path = Path(video_path_str)
                 logger.info(f"视频下载完成：{self.video_path}")
@@ -397,6 +459,8 @@ class NoteGenerator:
         # 下载音频
         try:
             logger.info("开始下载音频")
+            if task_manager.is_cancelled(task_id):
+                raise TaskCancelledError("Task cancelled")
             audio = downloader.download(
                 video_url=video_url,
                 quality=quality,
@@ -418,6 +482,7 @@ class NoteGenerator:
         audio_file: str,
         transcript_cache_file: Path,
         status_phase: TaskStatus,
+        total_duration_seconds: Optional[float] = None,
     ) -> TranscriptResult | None:
         """
         1. 检查转写缓存；若存在则尝试加载，否则调用转写器生成并缓存。
@@ -429,7 +494,20 @@ class NoteGenerator:
         :return: TranscriptResult 对象
         """
         task_id = transcript_cache_file.stem.split("_")[0]
-        self._update_status(task_id, status_phase)
+
+        if task_manager.is_cancelled(task_id):
+            raise TaskCancelledError("Task cancelled")
+
+        if not isinstance(total_duration_seconds, (int, float)) or total_duration_seconds <= 0:
+            total_duration_seconds = _probe_media_duration_seconds(audio_file)
+
+        stage_start = TaskStatus.progress(TaskStatus.DOWNLOADING)
+        stage_end = TaskStatus.progress(status_phase)
+        if stage_end < stage_start:
+            stage_start = 0
+
+        # Start the transcribing stage at the previous stage boundary, then fill in real-time progress.
+        self._update_status(task_id, status_phase, progress=stage_start)
 
         # 已有缓存，尝试加载
         if transcript_cache_file.exists():
@@ -437,6 +515,8 @@ class NoteGenerator:
             try:
                 data = json.loads(transcript_cache_file.read_text(encoding="utf-8"))
                 segments = [TranscriptSegment(**seg) for seg in data.get("segments", [])]
+                # Cached transcript means transcribing is effectively done.
+                self._update_status(task_id, status_phase, progress=stage_end)
                 return TranscriptResult(language=data["language"], full_text=data["full_text"], segments=segments)
             except Exception as e:
                 logger.warning(f"加载转写缓存失败，将重新转写：{e}")
@@ -444,10 +524,60 @@ class NoteGenerator:
         # 调用转写器
         try:
             logger.info("开始转写音频")
-            transcript = self.transcriber.transcript(file_path=audio_file)
+            last_progress: int = int(stage_start)
+            last_update_at: float = 0.0
+
+            def _should_cancel() -> bool:
+                return task_manager.is_cancelled(task_id)
+
+            def _on_progress(processed_seconds: float) -> None:
+                nonlocal last_progress, last_update_at
+                if _should_cancel():
+                    raise TaskCancelledError("Task cancelled")
+
+                if not isinstance(total_duration_seconds, (int, float)) or total_duration_seconds <= 0:
+                    return
+
+                ratio = processed_seconds / float(total_duration_seconds)
+                if ratio < 0:
+                    ratio = 0.0
+                if ratio > 1:
+                    ratio = 1.0
+
+                raw_progress = stage_start + ratio * float(stage_end - stage_start)
+                next_progress = int(max(stage_start, min(stage_end, round(raw_progress))))
+                if next_progress < last_progress:
+                    next_progress = last_progress
+
+                now = time.monotonic()
+                if next_progress == last_progress and (now - last_update_at) < 2.0:
+                    return
+
+                last_progress = next_progress
+                last_update_at = now
+
+                self._update_status(
+                    task_id,
+                    status_phase,
+                    progress=last_progress,
+                    extra={
+                        "transcribed_seconds": float(processed_seconds),
+                        "total_seconds": float(total_duration_seconds),
+                    },
+                )
+
+            transcript = self.transcriber.transcript(
+                file_path=audio_file,
+                total_duration=float(total_duration_seconds) if isinstance(total_duration_seconds, (int, float)) else None,
+                on_progress=_on_progress,
+                should_cancel=_should_cancel,
+            )
             transcript_cache_file.write_text(json.dumps(asdict(transcript), ensure_ascii=False, indent=2), encoding="utf-8")
+            self._update_status(task_id, status_phase, progress=stage_end)
             logger.info(f"转写并缓存成功 ({transcript_cache_file})")
             return transcript
+        except TaskCancelledError:
+            raise
         except Exception as exc:
             logger.error(f"音频转写失败：{exc}")
             self._handle_exception(task_id, exc)
@@ -481,6 +611,8 @@ class NoteGenerator:
         :return: 生成的 Markdown 字符串
         """
         task_id = markdown_cache_file.stem
+        if task_manager.is_cancelled(task_id):
+            raise TaskCancelledError("Task cancelled")
         self._update_status(task_id, TaskStatus.SUMMARIZING)
 
         source = GPTSource(

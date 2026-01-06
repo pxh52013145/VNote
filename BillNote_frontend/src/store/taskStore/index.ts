@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import { delete_task, generateNote } from '@/services/note.ts'
+import { delete_task, generateNote, reingest_dify } from '@/services/note.ts'
 import { v4 as uuidv4 } from 'uuid'
 import toast from 'react-hot-toast'
 
@@ -105,6 +105,7 @@ interface TaskStore {
   getCurrentTask: () => Task | null
   getIngestTask: () => Task | null
   retryTask: (id: string, payload?: Task['formData']) => Promise<void>
+  reingestTask: (id: string) => Promise<void>
 }
 
 export const useTaskStore = create<TaskStore>()(
@@ -230,6 +231,69 @@ export const useTaskStore = create<TaskStore>()(
         }))
       },
 
+      reingestTask: async (id: string) => {
+        if (!id) {
+          toast.error('任务不存在')
+          return
+        }
+
+        const task = get().tasks.find(task => task.id === id)
+        if (!task) {
+          toast.error('任务不存在')
+          return
+        }
+
+        try {
+          // 清空入库错误，让轮询继续推进索引状态
+          set(state => ({
+            tasks: state.tasks.map(t =>
+              t.id === id
+                ? {
+                    ...t,
+                    status: 'SUCCESS',
+                    progress: 100,
+                    dify_error: undefined,
+                    dify_indexing: undefined,
+                  }
+                : t
+            ),
+          }))
+
+          const res: any = await reingest_dify(
+            {
+              task_id: id,
+              video_url: task.formData?.video_url,
+              platform: task.platform || task.formData?.platform,
+              include_transcript: true,
+              include_note: true,
+            },
+            { silent: true }
+          )
+
+          const difyError = res?.dify_error ? String(res.dify_error) : undefined
+          if (difyError) {
+            toast.error('重新入库失败：' + difyError)
+          } else {
+            toast.success('已重新提交入库')
+          }
+
+          set(state => ({
+            tasks: state.tasks.map(t =>
+              t.id === id
+                ? {
+                    ...t,
+                    dify: res?.dify ?? t.dify,
+                    dify_error: difyError,
+                    dify_indexing: undefined,
+                  }
+                : t
+            ),
+          }))
+        } catch (e) {
+          toast.error('重新入库失败')
+          throw e
+        }
+      },
 
       removeTask: async id => {
         const task = get().tasks.find(t => t.id === id)
@@ -244,6 +308,7 @@ export const useTaskStore = create<TaskStore>()(
         // 调用后端删除接口（如果找到了任务）
         if (task) {
           await delete_task({
+            task_id: task.id,
             video_id: task.audioMeta.video_id,
             platform: task.platform,
           })

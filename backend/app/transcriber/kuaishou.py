@@ -1,10 +1,11 @@
 import requests
 import logging
 import os
-from typing import Union, List, Dict, Optional
+from typing import Callable, Union, List, Dict, Optional
 
 from app.decorators.timeit import timeit
 from app.models.transcriber_model import TranscriptSegment, TranscriptResult
+from app.services.task_manager import TaskCancelledError
 from app.transcriber.base import Transcriber
 from app.utils.logger import get_logger
 from events import transcription_finished
@@ -61,10 +62,20 @@ class KuaishouTranscriber(Transcriber):
             raise
 
     @timeit
-    def transcript(self, file_path: str) -> TranscriptResult:
+    def transcript(
+        self,
+        file_path: str,
+        *,
+        total_duration: float | None = None,
+        on_progress: Callable[[float], None] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> TranscriptResult:
         """执行转录过程，符合 Transcriber 接口"""
         try:
             logger.info(f"开始处理文件: {file_path}")
+
+            if should_cancel and should_cancel():
+                raise TaskCancelledError("Task cancelled")
             
             # 提交请求并获取结果
             logger.info("向快手API提交识别请求...")

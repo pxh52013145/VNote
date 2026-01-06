@@ -2,10 +2,12 @@ import mlx_whisper
 from pathlib import Path
 import os
 import platform
+from typing import Callable, Optional
 from huggingface_hub import snapshot_download
 
 from app.decorators.timeit import timeit
 from app.models.transcriber_model import TranscriptSegment, TranscriptResult
+from app.services.task_manager import TaskCancelledError
 from app.transcriber.base import Transcriber
 from app.utils.logger import get_logger
 from app.utils.path_helper import get_model_dir
@@ -46,7 +48,14 @@ class MLXWhisperTranscriber(Transcriber):
         logger.info(f"初始化 MLX Whisper 转录器，模型：{self.model_name}")
 
     @timeit
-    def transcript(self, file_path: str) -> TranscriptResult:
+    def transcript(
+        self,
+        file_path: str,
+        *,
+        total_duration: Optional[float] = None,
+        on_progress: Optional[Callable[[float], None]] = None,
+        should_cancel: Optional[Callable[[], bool]] = None,
+    ) -> TranscriptResult:
         try:
             # 使用 MLX Whisper 进行转录
             result = mlx_whisper.transcribe(
@@ -57,8 +66,22 @@ class MLXWhisperTranscriber(Transcriber):
             # 转换为标准格式
             segments = []
             full_text = ""
+
+            if should_cancel and should_cancel():
+                raise TaskCancelledError("Task cancelled")
+
+            if on_progress:
+                try:
+                    on_progress(0.0)
+                except TaskCancelledError:
+                    raise
+                except Exception:
+                    pass
             
             for segment in result["segments"]:
+                if should_cancel and should_cancel():
+                    raise TaskCancelledError("Task cancelled")
+
                 text = segment["text"].strip()
                 full_text += text + " "
                 segments.append(TranscriptSegment(
@@ -66,6 +89,14 @@ class MLXWhisperTranscriber(Transcriber):
                     end=segment["end"],
                     text=text
                 ))
+
+                if on_progress:
+                    try:
+                        on_progress(float(segment.get("end", 0.0)))
+                    except TaskCancelledError:
+                        raise
+                    except Exception:
+                        pass
             
             transcript_result = TranscriptResult(
                 language=result.get("language", "unknown"),

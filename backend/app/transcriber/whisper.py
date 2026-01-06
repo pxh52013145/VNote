@@ -1,7 +1,9 @@
 from faster_whisper import WhisperModel
+from typing import Callable, Optional
 
 from app.decorators.timeit import timeit
 from app.models.transcriber_model import TranscriptSegment, TranscriptResult
+from app.services.task_manager import TaskCancelledError
 from app.transcriber.base import Transcriber
 from app.utils.env_checker import is_cuda_available
 from app.utils.logger import get_logger
@@ -73,7 +75,14 @@ class WhisperTranscriber(Transcriber):
         return is_cuda_available()
 
     @timeit
-    def transcript(self, file_path: str) -> TranscriptResult:
+    def transcript(
+        self,
+        file_path: str,
+        *,
+        total_duration: Optional[float] = None,
+        on_progress: Optional[Callable[[float], None]] = None,
+        should_cancel: Optional[Callable[[], bool]] = None,
+    ) -> TranscriptResult:
         try:
 
             segments_raw, info = self.model.transcribe(file_path)
@@ -81,7 +90,21 @@ class WhisperTranscriber(Transcriber):
             segments = []
             full_text = ""
 
+            if should_cancel and should_cancel():
+                raise TaskCancelledError("Task cancelled")
+
+            if on_progress:
+                try:
+                    on_progress(0.0)
+                except TaskCancelledError:
+                    raise
+                except Exception:
+                    pass
+
             for seg in segments_raw:
+                if should_cancel and should_cancel():
+                    raise TaskCancelledError("Task cancelled")
+
                 text = seg.text.strip()
                 full_text += text + " "
                 segments.append(TranscriptSegment(
@@ -89,6 +112,14 @@ class WhisperTranscriber(Transcriber):
                     end=seg.end,
                     text=text
                 ))
+
+                if on_progress:
+                    try:
+                        on_progress(float(seg.end))
+                    except TaskCancelledError:
+                        raise
+                    except Exception:
+                        pass
 
             result= TranscriptResult(
                 language=info.language,
@@ -98,8 +129,11 @@ class WhisperTranscriber(Transcriber):
             )
             # self.on_finish(file_path, result)
             return result
+        except TaskCancelledError:
+            raise
         except Exception as e:
-            print(f"转写失败：{e}")
+            logger.error(f"转写失败：{e}")
+            raise
 
 
     def on_finish(self,video_path:str,result: TranscriptResult)->None:

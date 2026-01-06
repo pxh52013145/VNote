@@ -10,6 +10,7 @@ from app.db.provider_dao import (
     update_provider,
     delete_provider, get_enabled_providers,
 )
+from app.db.model_dao import delete_models_by_provider
 from app.gpt.gpt_factory import GPTFactory
 from app.models.model_config import ModelConfig
 
@@ -131,4 +132,17 @@ class ProviderService:
 
     @staticmethod
     def delete_provider(id: str):
+        row = get_provider_by_id(id)
+        if not row:
+            return False
+
+        if getattr(row, "type", None) == "built-in":
+            raise ValueError("内置供应商不可删除")
+
+        # Clean up related models (best-effort).
+        try:
+            delete_models_by_provider(id)
+        except Exception as e:
+            print("删除供应商关联模型失败:", e)
+
         return delete_provider(id)

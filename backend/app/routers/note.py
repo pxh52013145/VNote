@@ -18,11 +18,14 @@ from app.enmus.task_status_enums import TaskStatus
 from app.exceptions.note import NoteError
 from app.services.dify_client import DifyConfig, DifyError, DifyKnowledgeClient
 from app.services.note import NoteGenerator, logger
+from app.services.task_manager import task_manager
 from app.services.rag_service import (
     build_rag_document_name,
     build_rag_document_text,
     build_rag_note_document_text,
 )
+from app.models.audio_model import AudioDownloadResult
+from app.models.transcriber_model import TranscriptResult, TranscriptSegment
 from app.utils.response import ResponseWrapper as R
 from app.utils.url_parser import extract_video_id
 from app.validators.video_url_validator import is_supported_video_url
@@ -38,6 +41,7 @@ router = APIRouter()
 class RecordRequest(BaseModel):
     video_id: str
     platform: str
+    task_id: Optional[str] = None
 
 
 class VideoRequest(BaseModel):
@@ -74,6 +78,14 @@ class VideoRequest(BaseModel):
         return url
 
 
+class ReingestRequest(BaseModel):
+    task_id: str
+    video_url: Optional[str] = None
+    platform: Optional[str] = None
+    include_transcript: bool = True
+    include_note: bool = True
+
+
 NOTE_OUTPUT_DIR = os.getenv("NOTE_OUTPUT_DIR", "note_results")
 UPLOAD_DIR = "uploads"
 
@@ -91,6 +103,37 @@ def _atomic_merge_json_file(path: Path, patch: dict[str, Any]) -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp.replace(path)
+
+
+def _extract_dify_indexing_error(payload: Any) -> Optional[str]:
+    if not isinstance(payload, dict):
+        return None
+
+    items = payload.get("data")
+    if not isinstance(items, list) or not items:
+        return None
+
+    errors: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        status = str(item.get("indexing_status") or "").strip().lower()
+        if status not in ("error", "failed"):
+            continue
+
+        doc_id = str(item.get("id") or item.get("document_id") or "").strip()
+        err = str(item.get("error") or item.get("message") or "").strip()
+        if not err:
+            err = f"indexing_status={status}"
+        errors.append(f"{doc_id}: {err}" if doc_id else err)
+
+    if not errors:
+        return None
+
+    preview = " | ".join(errors[:3])
+    if len(errors) > 3:
+        preview = f"{preview} (+{len(errors) - 3} more)"
+    return preview
 
 
 def save_note_to_file(task_id: str, note, extra: Optional[dict[str, Any]] = None):
@@ -111,32 +154,35 @@ def run_note_task(task_id: str, video_url: str, platform: str, quality: Download
     if not model_name or not provider_id:
         raise HTTPException(status_code=400, detail="请选择模型和提供者")
 
-    note = NoteGenerator().generate(
-        video_url=video_url,
-        platform=platform,
-        quality=quality,
-        task_id=task_id,
-        model_name=model_name,
-        provider_id=provider_id,
-        link=link,
-        _format=_format,
-        style=style,
-        extras=extras,
-        screenshot=screenshot
-        , video_understanding=video_understanding,
-        video_interval=video_interval,
-        grid_size=grid_size
-    )
-    logger.info(f"Note generated: {task_id}")
-    if not note or not note.markdown:
-        logger.warning(f"任务 {task_id} 执行失败，跳过保存")
-        return
-
-    # Always save note results locally first.
-    save_note_to_file(task_id, note)
-
-    # Upload transcript + note to Dify Knowledge Base for RAG (separate datasets).
     try:
+        task_manager.ensure(task_id)
+
+        generator = NoteGenerator()
+        note = generator.generate(
+            video_url=video_url,
+            platform=platform,
+            quality=quality,
+            task_id=task_id,
+            model_name=model_name,
+            provider_id=provider_id,
+            link=link,
+            _format=_format,
+            style=style,
+            extras=extras,
+            screenshot=screenshot,
+            video_understanding=video_understanding,
+            video_interval=video_interval,
+            grid_size=grid_size,
+        )
+        logger.info(f"Note generated: {task_id}")
+        if not note or not note.markdown:
+            logger.warning(f"任务 {task_id} 未生成结果，跳过保存/上传")
+            return
+
+        # Always save note results locally first.
+        save_note_to_file(task_id, note)
+
+        # Upload transcript + note to Dify Knowledge Base for RAG (separate datasets).
         dify_cfg = DifyConfig.from_env()
         client = DifyKnowledgeClient(dify_cfg)
         try:
@@ -226,17 +272,41 @@ def run_note_task(task_id: str, video_url: str, platform: str, quality: Download
         status_path = Path(NOTE_OUTPUT_DIR) / f"{task_id}.status.json"
         _atomic_merge_json_file(status_path, {"dify_error": str(exc)})
         logger.error(f"Dify upload failed (task_id={task_id}): {exc}", exc_info=True)
+    finally:
+        task_manager.cleanup(task_id)
 
 
 
 @router.post('/delete_task')
 def delete_task(data: RecordRequest):
     try:
-        # TODO: 待持久化完成
-        # NoteGenerator().delete_note(video_id=data.video_id, platform=data.platform)
+        task_id = (data.task_id or "").strip()
+        if not task_id and data.video_id and data.platform:
+            task_id = get_task_by_video(data.video_id, data.platform) or ""
+
+        if task_id:
+            # Cooperative cancellation (background task checks this flag).
+            task_manager.cancel(task_id)
+
+            status_path = Path(NOTE_OUTPUT_DIR) / f"{task_id}.status.json"
+            status = None
+            if status_path.exists():
+                try:
+                    status = json.loads(status_path.read_text(encoding="utf-8")).get("status")
+                except Exception:
+                    status = None
+
+            # Only override status while still running; keep SUCCESS/FAILED records intact.
+            if status not in (TaskStatus.SUCCESS.value, TaskStatus.FAILED.value, TaskStatus.CANCELLED.value):
+                NoteGenerator()._update_status(task_id, TaskStatus.CANCELLED, message="任务已取消")
+
+        # Best-effort DB cleanup for completed tasks (video_id may be empty while running).
+        if data.video_id and data.platform:
+            NoteGenerator().delete_note(video_id=data.video_id, platform=data.platform)
+
         return R.success(msg='删除成功')
     except Exception as e:
-        return R.error(msg=e)
+        return R.error(msg=str(e))
 
 
 @router.post("/upload")
@@ -268,7 +338,17 @@ def generate_note(data: VideoRequest, background_tasks: BackgroundTasks):
             # 如果传了task_id，说明是重试！
             task_id = data.task_id
             # 更新之前的状态
-            NoteGenerator()._update_status(task_id, TaskStatus.PENDING)
+            NoteGenerator()._update_status(
+                task_id,
+                TaskStatus.PENDING,
+                extra={
+                    "dify": None,
+                    "dify_error": None,
+                    "dify_indexing": None,
+                    "transcribed_seconds": None,
+                    "total_seconds": None,
+                },
+            )
             logger.info(f"重试模式，复用已有 task_id={task_id}")
         else:
             # 正常新建任务
@@ -280,6 +360,254 @@ def generate_note(data: VideoRequest, background_tasks: BackgroundTasks):
         return R.success({"task_id": task_id})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def _parse_audio_meta(payload: Any) -> AudioDownloadResult:
+    if not isinstance(payload, dict):
+        raise ValueError("note result is not a JSON object")
+
+    audio_meta = payload.get("audio_meta")
+    if not isinstance(audio_meta, dict):
+        raise ValueError("missing audio_meta in note result")
+
+    return AudioDownloadResult(
+        file_path=str(audio_meta.get("file_path") or ""),
+        title=str(audio_meta.get("title") or ""),
+        duration=float(audio_meta.get("duration") or 0),
+        cover_url=audio_meta.get("cover_url"),
+        platform=str(audio_meta.get("platform") or ""),
+        video_id=str(audio_meta.get("video_id") or ""),
+        raw_info=audio_meta.get("raw_info") if isinstance(audio_meta.get("raw_info"), dict) else {},
+        video_path=audio_meta.get("video_path"),
+    )
+
+
+def _parse_transcript(payload: Any) -> TranscriptResult:
+    if not isinstance(payload, dict):
+        raise ValueError("note result is not a JSON object")
+
+    transcript = payload.get("transcript")
+    if not isinstance(transcript, dict):
+        return TranscriptResult(language=None, full_text="", segments=[], raw=None)
+
+    segments: list[TranscriptSegment] = []
+    raw_segments = transcript.get("segments")
+    if isinstance(raw_segments, list):
+        for seg in raw_segments:
+            if not isinstance(seg, dict):
+                continue
+            text = str(seg.get("text") or "").strip()
+            if not text:
+                continue
+            try:
+                start = float(seg.get("start") or 0)
+                end = float(seg.get("end") or start)
+            except (TypeError, ValueError):
+                start = 0.0
+                end = 0.0
+            segments.append(TranscriptSegment(start=start, end=end, text=text))
+
+    return TranscriptResult(
+        language=str(transcript.get("language") or "") or None,
+        full_text=str(transcript.get("full_text") or ""),
+        segments=segments,
+        raw=transcript.get("raw"),
+    )
+
+
+def _extract_markdown(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    md = payload.get("markdown")
+    if isinstance(md, str):
+        return md
+    # Backward-compatible: some old results may store markdown versions as a list.
+    if isinstance(md, list) and md:
+        first = md[0]
+        if isinstance(first, dict) and isinstance(first.get("content"), str):
+            return str(first.get("content") or "")
+        if isinstance(first, str):
+            return first
+    return ""
+
+
+def _get_existing_dify_doc(dify: Any, kind: str) -> tuple[Optional[str], Optional[str]]:
+    """
+    Returns (dataset_id, document_id) for a given kind ("transcript" or "note").
+    Backward-compatible: legacy `dify.dataset_id/document_id` maps to transcript.
+    """
+    if not isinstance(dify, dict):
+        return None, None
+
+    if kind in dify and isinstance(dify.get(kind), dict):
+        info = dify.get(kind) or {}
+        return (
+            str(info.get("dataset_id") or "").strip() or None,
+            str(info.get("document_id") or "").strip() or None,
+        )
+
+    if kind == "transcript":
+        return (
+            str(dify.get("dataset_id") or "").strip() or None,
+            str(dify.get("document_id") or "").strip() or None,
+        )
+
+    return None, None
+
+
+@router.post("/reingest_dify")
+def reingest_dify(data: ReingestRequest):
+    task_id = str(data.task_id or "").strip()
+    if not task_id:
+        return R.error("Missing task_id", code=400)
+
+    result_path = Path(NOTE_OUTPUT_DIR) / f"{task_id}.json"
+    if not result_path.exists():
+        return R.error("Note result file not found", code=404)
+
+    status_path = Path(NOTE_OUTPUT_DIR) / f"{task_id}.status.json"
+
+    try:
+        result_content = json.loads(result_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return R.error(f"Failed to read note result: {exc}", code=500)
+
+    status_content: dict[str, Any] = {}
+    if status_path.exists():
+        try:
+            status_content = json.loads(status_path.read_text(encoding="utf-8"))
+        except Exception:
+            status_content = {}
+
+    try:
+        audio = _parse_audio_meta(result_content)
+        transcript = _parse_transcript(result_content)
+        markdown = _extract_markdown(result_content)
+    except Exception as exc:
+        return R.error(f"Invalid note result: {exc}", code=500)
+
+    platform = str(data.platform or "").strip() or str(audio.platform or "").strip() or "unknown"
+    source_url = str(data.video_url or "").strip()
+    if not markdown:
+        return R.error("Note markdown is empty; cannot ingest to Dify", code=400)
+
+    dify_cfg = DifyConfig.from_env()
+    client = DifyKnowledgeClient(dify_cfg)
+    try:
+        base_name = build_rag_document_name(audio, platform)
+        transcript_dataset_id = (dify_cfg.transcript_dataset_id or dify_cfg.dataset_id).strip()
+        note_dataset_id = (dify_cfg.note_dataset_id or dify_cfg.dataset_id).strip()
+
+        # Prefer the latest dify info in status file, fallback to result file.
+        prev_dify = status_content.get("dify")
+        if not isinstance(prev_dify, dict):
+            prev_dify = result_content.get("dify")
+
+        dify_info: dict[str, Any] = {
+            "base_url": dify_cfg.base_url,
+            "transcript": None,
+            "note": None,
+        }
+        dify_errors: dict[str, str] = {}
+
+        if data.include_transcript:
+            if transcript_dataset_id:
+                transcript_name = f"{base_name} (transcript)"
+                transcript_text = build_rag_document_text(
+                    audio=audio,
+                    transcript=transcript,
+                    platform=platform,
+                    source_url=source_url,
+                )
+                prev_dataset_id, prev_document_id = _get_existing_dify_doc(prev_dify, "transcript")
+                try:
+                    if prev_document_id and prev_dataset_id == transcript_dataset_id:
+                        resp_transcript = client.update_document_by_text(
+                            dataset_id=transcript_dataset_id,
+                            document_id=prev_document_id,
+                            name=transcript_name,
+                            text=transcript_text,
+                            doc_language="Chinese Simplified",
+                        )
+                    else:
+                        resp_transcript = client.create_document_by_text(
+                            dataset_id=transcript_dataset_id,
+                            name=transcript_name,
+                            text=transcript_text,
+                            doc_language="Chinese Simplified",
+                        )
+                    doc_transcript = resp_transcript.get("document") or {}
+                    dify_info["transcript"] = {
+                        "dataset_id": transcript_dataset_id,
+                        "document_id": doc_transcript.get("id"),
+                        "batch": resp_transcript.get("batch"),
+                    }
+                    # Backward-compatible primary fields (use transcript).
+                    dify_info["dataset_id"] = transcript_dataset_id
+                    dify_info["document_id"] = doc_transcript.get("id")
+                    dify_info["batch"] = resp_transcript.get("batch")
+                except DifyError as exc:
+                    dify_errors["transcript"] = str(exc)
+            else:
+                dify_errors["transcript"] = "Missing transcript dataset id"
+
+        if data.include_note:
+            if note_dataset_id:
+                note_name = f"{base_name} (note)"
+                note_text = build_rag_note_document_text(
+                    audio=audio,
+                    platform=platform,
+                    source_url=source_url,
+                    note_markdown=markdown,
+                )
+                prev_note_dataset_id, prev_note_document_id = _get_existing_dify_doc(prev_dify, "note")
+                try:
+                    if prev_note_document_id and prev_note_dataset_id == note_dataset_id:
+                        resp_note = client.update_document_by_text(
+                            dataset_id=note_dataset_id,
+                            document_id=prev_note_document_id,
+                            name=note_name,
+                            text=note_text,
+                            doc_language="Chinese Simplified",
+                        )
+                    else:
+                        resp_note = client.create_document_by_text(
+                            dataset_id=note_dataset_id,
+                            name=note_name,
+                            text=note_text,
+                            doc_language="Chinese Simplified",
+                        )
+                    doc_note = resp_note.get("document") or {}
+                    dify_info["note"] = {
+                        "dataset_id": note_dataset_id,
+                        "document_id": doc_note.get("id"),
+                        "batch": resp_note.get("batch"),
+                    }
+                except DifyError as exc:
+                    dify_errors["note"] = str(exc)
+            else:
+                dify_errors["note"] = "Missing note dataset id"
+    finally:
+        client.close()
+
+    _atomic_merge_json_file(result_path, {"dify": dify_info})
+    _atomic_merge_json_file(
+        status_path,
+        {
+            "status": TaskStatus.SUCCESS.value,
+            "progress": 100,
+            "dify": dify_info,
+            "dify_error": None,
+            "dify_indexing": None,
+        },
+    )
+
+    dify_error: Optional[str] = None
+    if dify_errors:
+        dify_error = json.dumps(dify_errors, ensure_ascii=False)
+        _atomic_merge_json_file(status_path, {"dify_error": dify_error})
+
+    return R.success({"task_id": task_id, "dify": dify_info, "dify_error": dify_error})
 
 
 @router.get("/task_status/{task_id}")
@@ -348,6 +676,9 @@ def get_task_status(task_id: str):
 
                             if per_dataset:
                                 dify_indexing = {**per_dataset, "data": merged_data}
+                                indexing_error = _extract_dify_indexing_error(dify_indexing)
+                                if indexing_error and not dify_error:
+                                    dify_error = indexing_error
                         finally:
                             dify_client.close()
                     except Exception as exc:

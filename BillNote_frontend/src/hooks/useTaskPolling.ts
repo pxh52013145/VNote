@@ -22,8 +22,21 @@ export const useTaskPolling = (interval = 3000) => {
         return docs.every(d => typeof d === 'object' && d && d.indexing_status === 'completed')
       }
 
+      const getDifyIndexingError = (payload: any) => {
+        const docs = payload?.data
+        if (!Array.isArray(docs) || docs.length === 0) return null
+        for (const d of docs) {
+          if (!d || typeof d !== 'object') continue
+          const status = String((d as any).indexing_status || '').toLowerCase()
+          if (status !== 'error' && status !== 'failed') continue
+          const err = (d as any).error || (d as any).message || null
+          return err ? String(err) : `indexing_status=${status}`
+        }
+        return null
+      }
+
       const pendingTasks = tasksRef.current.filter(task => {
-        if (task.status === 'FAILED') return false
+        if (task.status === 'FAILED' || task.status === 'CANCELLED') return false
         if (task.status !== 'SUCCESS') return true
         if (task.dify_error) return false
         if (!task.dify?.batch) {
@@ -31,6 +44,7 @@ export const useTaskPolling = (interval = 3000) => {
           const ageMs = Date.now() - new Date(task.createdAt).getTime()
           return ageMs < 2 * 60 * 1000
         }
+        if (getDifyIndexingError(task.dify_indexing)) return false
         return !isDifyIndexingCompleted(task.dify_indexing)
       })
 
@@ -47,7 +61,7 @@ export const useTaskPolling = (interval = 3000) => {
             message: res?.message,
             dify: res.dify,
             dify_indexing: res.dify_indexing,
-            dify_error: res.dify_error,
+            dify_error: res.dify_error || getDifyIndexingError(res.dify_indexing),
           }
 
           if (status === 'SUCCESS' && task.status !== 'SUCCESS') {

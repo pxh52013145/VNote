@@ -234,6 +234,38 @@ class DifyKnowledgeClient:
             json=payload,
         )
 
+    def update_document_by_text(
+        self,
+        *,
+        dataset_id: Optional[str] = None,
+        document_id: str,
+        name: str,
+        text: str,
+        doc_language: str = "Chinese Simplified",
+    ) -> dict[str, Any]:
+        dataset = (dataset_id or self._config.dataset_id).strip() if (dataset_id or self._config.dataset_id) else ""
+        if not dataset:
+            raise DifyError("Missing Dify dataset id (set DIFY_DATASET_ID or per-call dataset_id)")
+        if not self._config.service_api_key:
+            raise DifyError("Missing DIFY_SERVICE_API_KEY")
+
+        doc_id = str(document_id or "").strip()
+        if not doc_id:
+            raise DifyError("Missing Dify document id")
+
+        payload = {
+            "name": name,
+            "text": text,
+            "doc_language": doc_language,
+        }
+
+        return self._http._request(
+            "POST",
+            f"/datasets/{dataset}/documents/{doc_id}/update-by-text",
+            api_key=self._config.service_api_key,
+            json=payload,
+        )
+
     def get_batch_indexing_status(self, *, batch: str, dataset_id: Optional[str] = None) -> dict[str, Any]:
         dataset = (dataset_id or self._config.dataset_id).strip() if (dataset_id or self._config.dataset_id) else ""
         if not dataset:

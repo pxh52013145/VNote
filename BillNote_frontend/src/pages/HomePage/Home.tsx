@@ -20,7 +20,7 @@ export const HomePage: FC = () => {
       setStatus('idle')
     } else if (currentTask.status === 'SUCCESS') {
       setStatus('success')
-    } else if (currentTask.status === 'FAILED') {
+    } else if (currentTask.status === 'FAILED' || currentTask.status === 'CANCELLED') {
       setStatus('failed')
     } else {
       setStatus('loading')

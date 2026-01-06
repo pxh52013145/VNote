@@ -101,7 +101,7 @@ export const useModelStore = create<ModelStore>()(
       try {
         const res = await addModel({ provider_id: providerId, model_name: modelId })
 
-        if (res.code === 0) {
+        if (!res || res.code === 0) {
           console.log('新增模型成功:', modelId)
           set((state) => ({
             models: [
