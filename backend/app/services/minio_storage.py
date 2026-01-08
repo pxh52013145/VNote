@@ -204,8 +204,12 @@ class MinioStorage:
                 "last_modified": str(getattr(st, "last_modified", "") or ""),
                 "metadata": meta_dict,  # keys are typically like "x-amz-meta-..."
             }
-        except S3Error:
-            return None
+        except S3Error as exc:
+            code = str(getattr(exc, "code", "") or "").strip()
+            # Treat missing objects/buckets as "not found".
+            if code in {"NoSuchKey", "NoSuchObject", "NoSuchBucket", "NotFound"}:
+                return None
+            raise RuntimeError(f"MinIO stat_object failed: {exc}") from exc
 
     def remove_object(self, *, bucket: str, object_key: str) -> None:
         b = (bucket or "").strip()

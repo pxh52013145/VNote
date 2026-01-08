@@ -39,7 +39,16 @@ export const useTaskPolling = (interval = 3000) => {
         if (task.status === 'FAILED' || task.status === 'CANCELLED') return false
         if (task.status !== 'SUCCESS') return true
         if (task.dify_error) return false
-        if (!task.dify?.batch) return false
+
+        // After SUCCESS, Dify upload info may be written a bit later (same task_id).
+        // Keep polling briefly so the UI can pick up `dify.batch` and then track indexing status.
+        const successAtMs = Date.parse(String((task as any)?.successAt || ''))
+        const createdAtMs = Date.parse(String((task as any)?.createdAt || ''))
+        const refMs = Number.isFinite(successAtMs) && successAtMs > 0 ? successAtMs : createdAtMs
+        const withinSuccessGrace = Number.isFinite(refMs) && refMs > 0 ? Date.now() - refMs < 5 * 60 * 1000 : false
+
+        if (task.dify && !task.dify?.batch) return true
+        if (!task.dify?.batch) return withinSuccessGrace
         if (getDifyIndexingError(task.dify_indexing)) return false
         return !isDifyIndexingCompleted(task.dify_indexing)
       })

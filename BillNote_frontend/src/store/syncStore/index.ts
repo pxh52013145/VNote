@@ -77,71 +77,116 @@ export const useSyncStore = create<SyncStoreState>((set, get) => ({
 
   push: async (item: SyncScanItem) => {
     const id = String(item?.local_task_id || '').trim()
-    if (!id) throw new Error('Missing itemId')
+    if (!id) {
+      toast.error('缺少本地任务 ID')
+      return
+    }
 
     const status = String(item?.status || '').toUpperCase()
-    const needBundle = item?.minio_bundle_exists === false
-    const forceOverwriteRemote = status === 'CONFLICT'
-    const includeNote = Boolean(item?.local_has_note) && (forceOverwriteRemote || needBundle || !Boolean(item?.remote_has_note))
-    const includeTranscript =
-      Boolean(item?.local_has_transcript) && (forceOverwriteRemote || needBundle || !Boolean(item?.remote_has_transcript))
+    const includeNote = item?.local_has_note !== false
+    const includeTranscript = item?.local_has_transcript !== false
     if (!includeNote && !includeTranscript) {
       toast.error('无可入库内容（本地缺少笔记/字幕）')
       return
     }
 
-    await syncPush({ item_id: id, include_note: includeNote, include_transcript: includeTranscript }, { silent: true })
-    toast.success('已同步至 Dify/MinIO')
-    await get().scan({ silent: true })
+    const needBundle = item?.minio_bundle_exists === false
+    const remoteHasAll =
+      (includeNote ? Boolean(item?.remote_has_note) : true) && (includeTranscript ? Boolean(item?.remote_has_transcript) : true)
+    const updateDify = !(needBundle && remoteHasAll)
+
+    try {
+      await syncPush(
+        { item_id: id, include_note: includeNote, include_transcript: includeTranscript, update_dify: updateDify },
+        { silent: true }
+      )
+      toast.success(status === 'SYNCED' ? '已重新入库' : '已同步至 Dify/MinIO')
+      await get().scan({ silent: true })
+    } catch (e: any) {
+      const msg = String(e?.msg || e?.message || '入库失败')
+      toast.error(msg)
+    }
   },
 
   pull: async (item: SyncScanItem, opts?: { overwrite?: boolean }) => {
     const key = String(item?.source_key || '').trim()
-    if (!key) throw new Error('Missing sourceKey')
-    const res = await syncPull({ source_key: key, overwrite: Boolean(opts?.overwrite) }, { silent: true })
-    const taskId = String((res as any)?.task_id || (res as any)?.sync_id || '').trim()
-    if (!taskId) throw new Error('同步获取成功，但未返回 task_id')
-    toast.success('已获取到本地')
-    await get().scan({ silent: true })
-    return taskId
+    if (!key) {
+      toast.error('缺少 source_key')
+      return ''
+    }
+    try {
+      const res = await syncPull({ source_key: key, overwrite: Boolean(opts?.overwrite) }, { silent: true })
+      const taskId = String((res as any)?.task_id || (res as any)?.sync_id || '').trim()
+      if (!taskId) {
+        toast.error('同步获取成功，但未返回 task_id')
+        return ''
+      }
+      toast.success('已获取到本地')
+      await get().scan({ silent: true })
+      return taskId
+    } catch (e: any) {
+      const msg = String(e?.msg || e?.message || '获取失败')
+      toast.error(msg)
+      return ''
+    }
   },
 
   deleteRemote: async (item: SyncScanItem) => {
     const key = String(item?.source_key || '').trim()
-    if (!key) throw new Error('Missing sourceKey')
+    if (!key) {
+      toast.error('缺少 source_key')
+      return
+    }
 
-    await syncDeleteRemote(
-      {
-        source_key: key,
-        delete_dify: true,
-        dify_note_document_id: item?.dify_note_document_id ?? null,
-        dify_transcript_document_id: item?.dify_transcript_document_id ?? null,
-      },
-      { silent: true }
-    )
-    toast.success('已标记远端删除（tombstone）')
-    await get().scan({ silent: true })
+    try {
+      await syncDeleteRemote(
+        {
+          source_key: key,
+          delete_dify: true,
+          dify_note_document_id: item?.dify_note_document_id ?? null,
+          dify_transcript_document_id: item?.dify_transcript_document_id ?? null,
+        },
+        { silent: true }
+      )
+      toast.success('已标记远端删除（tombstone）')
+      await get().scan({ silent: true })
+    } catch (e: any) {
+      const msg = String(e?.msg || e?.message || '删远端失败')
+      toast.error(msg)
+    }
   },
 
   copyAsNew: async (item: SyncScanItem, opts?: { fromSide?: 'local' | 'remote' }) => {
     const key = String(item?.source_key || '').trim()
-    if (!key) throw new Error('Missing sourceKey')
+    if (!key) {
+      toast.error('缺少 source_key')
+      return ''
+    }
     const fromSide = opts?.fromSide || 'local'
-    const res = await syncCopy(
-      {
-        source_key: key,
-        from_side: fromSide,
-        create_dify_docs: true,
-        include_note: true,
-        include_transcript: true,
-      },
-      { silent: true }
-    )
-    const taskId = String((res as any)?.task_id || (res as any)?.sync_id || '').trim()
-    if (!taskId) throw new Error('副本创建成功，但未返回 task_id')
-    toast.success('已另存为副本')
-    await get().scan({ silent: true })
-    return taskId
+    try {
+      const res = await syncCopy(
+        {
+          source_key: key,
+          from_side: fromSide,
+          create_dify_docs: true,
+          include_note: true,
+          include_transcript: true,
+        },
+        { silent: true }
+      )
+      const taskId = String((res as any)?.task_id || (res as any)?.sync_id || '').trim()
+      if (!taskId) {
+        toast.error('副本创建成功，但未返回 task_id')
+        return ''
+      }
+      toast.success('已另存为副本')
+      await get().scan({ silent: true })
+      return taskId
+    } catch (e: any) {
+      const msg = String(e?.msg || e?.message || '另存失败')
+      toast.error(msg)
+      return ''
+    }
   },
 
   reset: () => {

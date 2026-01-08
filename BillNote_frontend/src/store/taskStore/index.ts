@@ -75,6 +75,7 @@ export interface Task {
   dify_indexing?: any
   dify_error?: string
   createdAt: string
+  successAt?: string
   formData: {
     video_url: string
     link?: boolean
@@ -154,6 +155,13 @@ export const useTaskStore = create<TaskStore>()(
             tasks: state.tasks.map(task => {
               if (task.id !== id) return task
 
+              const shouldStampSuccessAt =
+                typeof (data as any)?.status === 'string' &&
+                (data as any).status === 'SUCCESS' &&
+                task.status !== 'SUCCESS' &&
+                !task.successAt
+              const successAtPatch = shouldStampSuccessAt ? { successAt: new Date().toISOString() } : {}
+
               // 如果是 markdown 字符串，封装为版本
               if (typeof data.markdown === 'string') {
                 const prev = task.markdown
@@ -186,11 +194,12 @@ export const useTaskStore = create<TaskStore>()(
                 return {
                   ...task,
                   ...data,
+                  ...successAtPatch,
                   markdown: updatedMarkdown,
                 }
               }
 
-              return { ...task, ...data }
+              return { ...task, ...data, ...successAtPatch }
             }),
           })),
 

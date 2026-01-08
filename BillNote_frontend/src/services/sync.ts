@@ -52,7 +52,7 @@ export const syncItemsCached = async (opts?: { silent?: boolean }) => {
 }
 
 export const syncPush = async (
-  data: { item_id: string; include_transcript?: boolean; include_note?: boolean },
+  data: { item_id: string; include_transcript?: boolean; include_note?: boolean; update_dify?: boolean },
   opts?: { silent?: boolean }
 ) => {
   const config: RequestConfig | undefined = opts?.silent ? { silent: true } : undefined

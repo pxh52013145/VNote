@@ -46,6 +46,23 @@ from app.utils.paths import note_output_dir, uploads_dir as get_uploads_dir
 
 router = APIRouter()
 
+_TRUE_VALUES = {"1", "true", "yes", "y", "on"}
+_FALSE_VALUES = {"0", "false", "no", "n", "off"}
+
+
+def _env_bool_or_auto(name: str, default: bool | None = None) -> bool | None:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    raw_l = str(raw).strip().lower()
+    if raw_l == "auto":
+        return None
+    if raw_l in _TRUE_VALUES:
+        return True
+    if raw_l in _FALSE_VALUES:
+        return False
+    return default
+
 
 class RecordRequest(BaseModel):
     video_id: str
@@ -427,12 +444,19 @@ def run_note_task(task_id: str, video_url: str, platform: str, quality: Download
             "yes",
             "on",
         }
-        auto_dify = str(os.getenv("AUTO_DIFY_INGEST_ON_GENERATE", "false") or "").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
+        auto_dify_raw = _env_bool_or_auto("AUTO_DIFY_INGEST_ON_GENERATE", None)
+        dify_cfg: DifyConfig | None = None
+        if auto_dify_raw is None:
+            # Auto mode (default): enable when Dify service key + any dataset id is configured.
+            try:
+                dify_cfg = DifyConfig.from_env()
+                transcript_dataset_id = (dify_cfg.transcript_dataset_id or dify_cfg.dataset_id).strip()
+                note_dataset_id = (dify_cfg.note_dataset_id or dify_cfg.dataset_id).strip()
+                auto_dify = bool((dify_cfg.service_api_key or "").strip()) and bool(transcript_dataset_id or note_dataset_id)
+            except Exception:
+                auto_dify = False
+        else:
+            auto_dify = bool(auto_dify_raw)
 
         # Optional: upload bundle to MinIO (source-of-truth for multi-device sync).
         if auto_minio:
@@ -458,18 +482,26 @@ def run_note_task(task_id: str, video_url: str, platform: str, quality: Download
 
         # Optional: upload transcript + note to Dify Knowledge Base for RAG (separate datasets).
         if auto_dify:
-            dify_cfg = DifyConfig.from_env()
+            dify_cfg = dify_cfg or DifyConfig.from_env()
+            dify_info: dict[str, Any] = {
+                "base_url": dify_cfg.base_url,
+                "transcript": None,
+                "note": None,
+            }
+            # Persist early so UI can show "uploading" even if Dify calls take a while.
+            try:
+                _task_dir(task_id).mkdir(parents=True, exist_ok=True)
+                _atomic_merge_json_file(_task_result_path(task_id), {"dify": dify_info})
+                _atomic_merge_json_file(_task_status_path(task_id), {"dify": dify_info})
+            except Exception:
+                pass
+
             client = DifyKnowledgeClient(dify_cfg)
             try:
                 base_name = build_rag_document_name(note.audio_meta, platform, created_at_ms=created_at_ms)
                 transcript_dataset_id = (dify_cfg.transcript_dataset_id or dify_cfg.dataset_id).strip()
                 note_dataset_id = (dify_cfg.note_dataset_id or dify_cfg.dataset_id).strip()
 
-                dify_info: dict[str, Any] = {
-                    "base_url": dify_cfg.base_url,
-                    "transcript": None,
-                    "note": None,
-                }
                 dify_errors: dict[str, str] = {}
 
                 if transcript_dataset_id:

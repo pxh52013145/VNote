@@ -39,6 +39,59 @@ def _read_json(path: Path) -> dict[str, Any] | None:
         return None
 
 
+def _coerce_int_ms(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    try:
+        ms = int(value)
+    except (TypeError, ValueError):
+        return None
+    return ms if ms > 0 else None
+
+
+def _parse_created_at_ms_from_source_key(source_key: str) -> Optional[int]:
+    raw = str(source_key or "").strip()
+    if not raw:
+        return None
+    parts = [p.strip() for p in raw.split(":") if p is not None]
+    if len(parts) < 3:
+        return None
+    tail = parts[-1]
+    if not tail.isdigit():
+        return None
+    try:
+        ms = int(tail)
+    except ValueError:
+        return None
+    return ms if ms > 0 else None
+
+
+def _read_prefer_created_at_ms(paths: dict[str, Optional[Path]]) -> Optional[int]:
+    """
+    Prefer the created_at_ms persisted inside result/status JSON ("sync.created_at_ms").
+
+    This value is authoritative and should be stable even when file mtimes change.
+    """
+    for p in (paths.get("result_path"), paths.get("status_path")):
+        if not isinstance(p, Path) or not p.exists():
+            continue
+        payload = _read_json(p)
+        if not isinstance(payload, dict):
+            continue
+        sync = payload.get("sync") if isinstance(payload.get("sync"), dict) else None
+        if not isinstance(sync, dict):
+            continue
+        ms = _coerce_int_ms(sync.get("created_at_ms"))
+        if ms:
+            return ms
+        ms2 = _parse_created_at_ms_from_source_key(str(sync.get("source_key") or ""))
+        if ms2:
+            return ms2
+    return None
+
+
 def _safe_mtime_ms(path: Path) -> int:
     try:
         return int(path.stat().st_mtime * 1000)
@@ -68,15 +121,34 @@ def ensure_local_sync_meta(
     the main result/status files are touched.
     """
     meta_path = _sync_meta_path(note_dir, task_id)
+    prefer_ms = _coerce_int_ms(prefer_created_at_ms)
     existing = _read_json(meta_path)
     if isinstance(existing, dict):
-        source_key = str(existing.get("source_key") or "").strip()
-        sync_id = str(existing.get("sync_id") or "").strip()
-        created_at_ms = existing.get("created_at_ms")
-        if source_key and sync_id and isinstance(created_at_ms, int) and created_at_ms > 0:
+        existing_source_key = str(existing.get("source_key") or "").strip()
+        existing_sync_id = str(existing.get("sync_id") or "").strip()
+        existing_created_at_ms = _coerce_int_ms(existing.get("created_at_ms"))
+        existing_platform = str(existing.get("platform") or "").strip()
+        existing_video_id = str(existing.get("video_id") or "").strip()
+        existing_title = str(existing.get("title") or "").strip()
+
+        has_existing = bool(existing_source_key and existing_sync_id and existing_created_at_ms)
+        if has_existing and not prefer_ms:
             return existing
 
-    created_at_ms = int(prefer_created_at_ms or 0)
+        if has_existing and prefer_ms:
+            expected_source_key = make_source_key(platform=platform, video_id=video_id, created_at_ms=prefer_ms)
+            expected_sync_id = compute_sync_id(expected_source_key)
+            if (
+                existing_created_at_ms == prefer_ms
+                and existing_source_key == expected_source_key
+                and existing_sync_id == expected_sync_id
+                and existing_platform == platform
+                and existing_video_id == video_id
+                and existing_title == title
+            ):
+                return existing
+
+    created_at_ms = int(prefer_ms or 0)
     if created_at_ms <= 0:
         # Pick the earliest reasonable mtime as the "created" timestamp.
         candidates = []
@@ -220,12 +292,14 @@ def scan_local_notes(note_dir: Path) -> list[LocalNoteItem]:
             continue
         title, platform, video_id = meta
 
+        prefer_created_at_ms = _read_prefer_created_at_ms(paths)
         sync_meta = ensure_local_sync_meta(
             note_dir=note_dir,
             task_id=task_id,
             platform=platform,
             video_id=video_id,
             title=title,
+            prefer_created_at_ms=prefer_created_at_ms,
         )
         created_at_ms = int(sync_meta.get("created_at_ms") or 0)
         source_key = str(sync_meta.get("source_key") or "").strip()
@@ -261,12 +335,14 @@ def load_local_note_item(note_dir: Path, task_id: str) -> LocalNoteItem | None:
     if not meta:
         return None
     title, platform, video_id = meta
+    prefer_created_at_ms = _read_prefer_created_at_ms(paths)
     sync_meta = ensure_local_sync_meta(
         note_dir=note_dir,
         task_id=tid,
         platform=platform,
         video_id=video_id,
         title=title,
+        prefer_created_at_ms=prefer_created_at_ms,
     )
     created_at_ms = int(sync_meta.get("created_at_ms") or 0) or _safe_mtime_ms(
         paths.get("status_path") or paths.get("result_path") or note_dir

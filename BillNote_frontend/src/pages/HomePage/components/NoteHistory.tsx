@@ -102,9 +102,12 @@ const getDifyTag = (task: any) => {
   if (task?.dify_error) {
     return { text: '入库失败', className: 'bg-rose-50 text-rose-700 border-rose-200' }
   }
-  if (task?.status === 'SUCCESS' && !task?.dify?.batch) {
+  if (task?.status === 'SUCCESS' && task?.dify && !task?.dify?.batch) {
     // Grace period: note may be done while Dify upload is still in-flight.
     return { text: '上传中', className: 'bg-sky-50 text-sky-700 border-sky-200' }
+  }
+  if (task?.status === 'SUCCESS' && !task?.dify) {
+    return { text: '未入库', className: 'bg-slate-50 text-slate-600 border-slate-200' }
   }
   if (!task?.dify?.batch) return null
 
@@ -174,7 +177,7 @@ const NoteHistory: FC<NoteHistoryProps> = ({ onSelect, selectedId }) => {
         {filteredTasks.map(task => {
           const difyTag = getDifyTag(task)
           const isGenerating = task.status !== 'SUCCESS' && task.status !== 'FAILED' && task.status !== 'CANCELLED'
-          const isUploading = task.status === 'SUCCESS' && !task.dify_error && !task?.dify?.batch
+          const isUploading = task.status === 'SUCCESS' && !task.dify_error && !!task?.dify && !task?.dify?.batch
           const isIndexing =
             task.status === 'SUCCESS' &&
             !task.dify_error &&

@@ -163,13 +163,15 @@ const KnowledgePage = () => {
         source_key: null,
         sync_id: null,
         local_task_id: t.id,
+        local_has_note: Array.isArray(t.markdown)
+          ? t.markdown.some(m => Boolean(String((m as any)?.content ?? m ?? '').trim()))
+          : Boolean(String(t.markdown || '').trim()),
+        local_has_transcript: Boolean((t.transcript?.segments || []).length) || Boolean(String(t.transcript?.full_text || '').trim()),
         _key: `task:${t.id}`,
       }))
 
     return [...base, ...fallback]
   }, [syncItems, tasks])
-
-  const taskById = useMemo(() => new Map(tasks.map(t => [t.id, t])), [tasks])
 
   const platformOptions = useMemo(() => {
     const set = new Set<string>()
@@ -296,7 +298,7 @@ const KnowledgePage = () => {
 
   return (
     <ResizablePanelGroup direction="horizontal" autoSaveId="note-layout" className="h-full w-full bg-slate-50">
-      <ResizablePanel defaultSize={25} minSize={16} maxSize={40}>
+      <ResizablePanel defaultSize={25} minSize={16} maxSize={40} className="min-w-[280px]">
         <div className="flex h-full flex-col border-r border-slate-200 bg-white shadow-sm">
           <Dialog open={filterOpen} onOpenChange={setFilterOpen}>
             <DialogContent className="max-w-[520px]">
@@ -431,10 +433,6 @@ const KnowledgePage = () => {
                     remoteSelected?._key === item._key
                   const title = item.title || '未命名笔记'
                   const tag1 = item.platform || ''
-                  const localId = String(item.local_task_id || '').trim()
-                  const task = localId ? taskById.get(localId) : null
-                  const modelTag = String(task?.formData?.model_name || '').trim()
-                  const styleTag = String(task?.formData?.style || '').trim()
                   const badge = getSyncBadge(item.status)
                   const date = formatDateMs(item.created_at_ms || null)
 
@@ -443,14 +441,19 @@ const KnowledgePage = () => {
                       key={item._key}
                       onClick={() => handleSelect(item)}
                       className={[
-                        'group p-3 rounded-lg border cursor-pointer transition-all',
+                        'group p-3 rounded-lg border cursor-pointer transition-all flex flex-col',
                         active
                           ? 'bg-white border-brand-200 shadow-sm ring-1 ring-brand-100'
                           : 'bg-transparent border-transparent hover:bg-slate-100 hover:border-slate-200',
                       ].join(' ')}
                     >
                       <div className="flex items-start justify-between gap-2">
-                        <h4 className={['text-sm font-semibold mb-1', active ? 'text-brand-700' : 'text-slate-700'].join(' ')}>
+                        <h4
+                          className={[
+                            'text-sm font-semibold leading-5 line-clamp-2 min-h-[2.5rem]',
+                            active ? 'text-brand-700' : 'text-slate-700',
+                          ].join(' ')}
+                        >
                           {title}
                         </h4>
                         <Badge variant="outline" className={badge.className}>
@@ -458,33 +461,26 @@ const KnowledgePage = () => {
                         </Badge>
                       </div>
 
-                      <div className="flex items-center justify-between mt-2">
+                      <div className="flex flex-wrap items-center mt-2 gap-2">
                         <div className="flex flex-wrap gap-1">
                           {tag1 ? (
-                            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-600">{tag1}</span>
-                          ) : null}
-                          {modelTag ? (
-                            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-pink-50 text-pink-700 border border-pink-200">
-                              {modelTag}
-                            </span>
-                          ) : null}
-                          {styleTag ? (
-                            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-cyan-50 text-cyan-700 border border-cyan-200">
-                              {styleTag}
+                            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-600 whitespace-nowrap">
+                              {tag1}
                             </span>
                           ) : null}
                         </div>
-                        <div className="flex items-center gap-2">
+                        <div className="ml-auto flex flex-wrap items-center gap-2 justify-end">
                           {(() => {
                             const s = String(item.status || '').toUpperCase()
+                            const isRestore = item.minio_tombstone_exists === true
                             const canPush =
                               Boolean(item.local_task_id) &&
-                              s !== 'DELETED' &&
-                              (s === 'LOCAL_ONLY' || s === 'PARTIAL' || s === 'CONFLICT' || item.minio_bundle_exists === false)
+                              s !== 'DELETED'
 
                             const canPull =
                               Boolean(item.source_key) &&
                               s !== 'DELETED' &&
+                              item.minio_bundle_exists !== false &&
                               s !== 'DIFY_ONLY_NO_BUNDLE' &&
                               (s === 'DIFY_ONLY' ||
                                 s === 'CONFLICT' ||
@@ -503,7 +499,7 @@ const KnowledgePage = () => {
                                 {canPush ? (
                                   <button
                                     type="button"
-                                    className="text-[10px] px-2 py-0.5 rounded bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-60"
+                                    className="text-[10px] px-2 py-0.5 rounded bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-60 whitespace-nowrap"
                                     disabled={actionBusyKey === item._key}
                                     onClick={async e => {
                                       e.stopPropagation()
@@ -515,20 +511,29 @@ const KnowledgePage = () => {
                                       }
                                     }}
                                   >
-                                    {s === 'CONFLICT' ? '本地覆盖' : '入库'}
+                                    {s === 'CONFLICT'
+                                      ? '本地覆盖'
+                                      : isRestore || s === 'SYNCED'
+                                        ? '重新入库'
+                                        : s === 'LOCAL_ONLY'
+                                          ? '入库'
+                                          : item.minio_bundle_exists === false
+                                            ? '补传'
+                                            : '入库'}
                                   </button>
                                 ) : null}
 
                                 {canPull ? (
                                   <button
                                     type="button"
-                                    className="text-[10px] px-2 py-0.5 rounded bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-60"
+                                    className="text-[10px] px-2 py-0.5 rounded bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-60 whitespace-nowrap"
                                     disabled={actionBusyKey === item._key}
                                     onClick={async e => {
                                       e.stopPropagation()
                                       setActionBusyKey(item._key)
                                       try {
                                         const newTaskId = await syncPull(item, { overwrite: s === 'CONFLICT' })
+                                        if (!newTaskId) return
                                         await ensureTaskLoaded(newTaskId)
                                         setRemoteSelected(null)
                                         setCurrentTask(newTaskId)
@@ -544,7 +549,7 @@ const KnowledgePage = () => {
                                 {s === 'CONFLICT' ? (
                                   <button
                                     type="button"
-                                    className="text-[10px] px-2 py-0.5 rounded bg-slate-200 text-slate-700 hover:bg-slate-300 disabled:opacity-60"
+                                    className="text-[10px] px-2 py-0.5 rounded bg-slate-200 text-slate-700 hover:bg-slate-300 disabled:opacity-60 whitespace-nowrap"
                                     disabled={actionBusyKey === item._key}
                                     onClick={async e => {
                                       e.stopPropagation()
@@ -552,6 +557,7 @@ const KnowledgePage = () => {
                                       setActionBusyKey(item._key)
                                       try {
                                         const newTaskId = await syncCopyAsNew(item, { fromSide: useLocal ? 'local' : 'remote' })
+                                        if (!newTaskId) return
                                         await ensureTaskLoaded(newTaskId)
                                         setRemoteSelected(null)
                                         setCurrentTask(newTaskId)
@@ -567,7 +573,7 @@ const KnowledgePage = () => {
                                 {canDeleteLocal ? (
                                   <button
                                     type="button"
-                                    className="text-[10px] px-2 py-0.5 rounded bg-slate-200 text-slate-700 hover:bg-slate-300 disabled:opacity-60"
+                                    className="text-[10px] px-2 py-0.5 rounded bg-slate-200 text-slate-700 hover:bg-slate-300 disabled:opacity-60 whitespace-nowrap"
                                     disabled={actionBusyKey === item._key}
                                     onClick={async e => {
                                       e.stopPropagation()
@@ -589,7 +595,7 @@ const KnowledgePage = () => {
                                 {canDeleteRemote ? (
                                   <button
                                     type="button"
-                                    className="text-[10px] px-2 py-0.5 rounded bg-slate-200 text-slate-700 hover:bg-slate-300 disabled:opacity-60"
+                                    className="text-[10px] px-2 py-0.5 rounded bg-slate-200 text-slate-700 hover:bg-slate-300 disabled:opacity-60 whitespace-nowrap"
                                     disabled={actionBusyKey === item._key}
                                     onClick={async e => {
                                       e.stopPropagation()
@@ -609,7 +615,12 @@ const KnowledgePage = () => {
                               </>
                             )
                           })()}
-                          <span className="text-[10px] text-slate-400">{date}</span>
+                          <span
+                            title={date}
+                            className="text-[10px] text-slate-400 inline-block max-w-[5.5rem] truncate align-middle"
+                          >
+                            {date}
+                          </span>
                         </div>
                       </div>
                     </div>
@@ -645,15 +656,16 @@ const KnowledgePage = () => {
                   type="button"
                   className="rounded bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-60"
                   disabled={actionBusyKey === remoteSelected._key}
-                  onClick={async () => {
-                    setActionBusyKey(remoteSelected._key)
-                    try {
-                      const newTaskId = await syncPull(remoteSelected)
-                      await ensureTaskLoaded(newTaskId)
-                      setRemoteSelected(null)
-                      setCurrentTask(newTaskId)
-                    } finally {
-                      setActionBusyKey(null)
+                   onClick={async () => {
+                     setActionBusyKey(remoteSelected._key)
+                     try {
+                       const newTaskId = await syncPull(remoteSelected)
+                       if (!newTaskId) return
+                       await ensureTaskLoaded(newTaskId)
+                       setRemoteSelected(null)
+                       setCurrentTask(newTaskId)
+                     } finally {
+                       setActionBusyKey(null)
                     }
                   }}
                 >

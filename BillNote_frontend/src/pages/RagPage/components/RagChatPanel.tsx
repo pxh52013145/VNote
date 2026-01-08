@@ -19,11 +19,58 @@ const isDifyIndexingCompleted = (payload: any) => {
 }
 
 const TIME_RANGE_RE =
-  /TIME=([0-9:]{1,2}:[0-9]{2}(?::[0-9]{2})?-[0-9:]{1,2}:[0-9]{2}(?::[0-9]{2})?)/i
+  /TIME=([0-9:]{1,2}:[0-9]{2}(?::[0-9]{2})?(?:\s*-\s*[0-9:]{1,2}:[0-9]{2}(?::[0-9]{2})?)?)/i
 
-const extractTimeRange = (text: string) => {
-  const m = TIME_RANGE_RE.exec(text)
-  return m?.[1] ?? null
+const ORIGIN_TIME_LINK_RE = /\[\s*原片\s*@\s*([0-9]{1,2}:[0-9]{2}(?::[0-9]{2})?)\s*\]\((https?:\/\/[^)\s]+)\)/gi
+
+const normalizeTimeRange = (value: string | null) => {
+  const raw = String(value || '').trim()
+  if (!raw) return null
+  const parts = raw
+    .split('-')
+    .map(p => p.trim())
+    .filter(Boolean)
+  if (parts.length === 0) return null
+  if (parts.length === 1) return parts[0]
+  return `${parts[0]}-${parts[1]}`
+}
+
+const extractTimeRanges = (text: string) => {
+  const raw = String(text || '')
+  const found: string[] = []
+
+  for (const m of raw.matchAll(
+    /TIME=([0-9:]{1,2}:[0-9]{2}(?::[0-9]{2})?(?:\s*-\s*[0-9:]{1,2}:[0-9]{2}(?::[0-9]{2})?)?)/gi
+  )) {
+    const t = normalizeTimeRange(String(m[1] || ''))
+    if (t && !found.includes(t)) found.push(t)
+  }
+
+  for (const m of raw.matchAll(/\[\s*原片\s*@\s*([0-9]{1,2}:[0-9]{2}(?::[0-9]{2})?)\s*\]\((https?:\/\/[^)\s]+)\)/gi)) {
+    const t = normalizeTimeRange(String(m[1] || ''))
+    if (t && !found.includes(t)) found.push(t)
+  }
+
+  for (const m of raw.matchAll(/content-(\d{2})(\d{2})(?!\d)/gi)) {
+    const mm = String(m[1] || '').padStart(2, '0')
+    const ss = String(m[2] || '').padStart(2, '0')
+    const t = normalizeTimeRange(`${mm}:${ss}`)
+    if (t && !found.includes(t)) found.push(t)
+  }
+
+  return found
+}
+
+const extractOriginTimeLinks = (text: string) => {
+  const raw = String(text || '')
+  const found: Array<{ time: string; url: string }> = []
+  for (const m of raw.matchAll(ORIGIN_TIME_LINK_RE)) {
+    const time = normalizeTimeRange(String(m[1] || ''))
+    const url = String(m[2] || '').trim()
+    if (!time || !url) continue
+    found.push({ time, url })
+  }
+  return found
 }
 
 const extractSourceUrl = (text: string) => {
@@ -36,8 +83,18 @@ const extractPlatformVideoId = (content: string, documentName: string) => {
   const platform = /PLATFORM=([^\]]+)/i.exec(content)?.[1]?.trim()
   if (vid && platform) return { platform, videoId: vid }
 
-  const m = /\[([^:\]]+):([^\]]+)\]\s*$/i.exec(documentName)
-  if (m?.[1] && m?.[2]) return { platform: m[1].trim(), videoId: m[2].trim() }
+  const rawName = String(documentName || '')
+  const right = rawName.lastIndexOf(']')
+  const left = right > 0 ? rawName.lastIndexOf('[', right) : -1
+  if (left >= 0 && right > left) {
+    const tag = rawName.slice(left + 1, right).trim()
+    const parts = tag
+      .split(':')
+      .map(p => p.trim())
+      .filter(Boolean)
+    // Supports "<title> [platform:video_id]" or "<title> [platform:video_id:created_at_ms]".
+    if (parts.length >= 2) return { platform: parts[0], videoId: parts[1] }
+  }
 
   return null
 }
@@ -53,6 +110,21 @@ const buildSourceUrlFallback = (platform: string, videoId: string) => {
     const base = m[1]
     const part = m[2]
     return part ? `https://www.bilibili.com/video/${base}?p=${part}` : `https://www.bilibili.com/video/${base}`
+  }
+
+  if (p === 'youtube' || p === 'yt') {
+    if (/^https?:\/\//i.test(v)) return v
+    return `https://www.youtube.com/watch?v=${encodeURIComponent(v)}`
+  }
+
+  if (p === 'douyin') {
+    if (/^https?:\/\//i.test(v)) return v
+    return `https://www.douyin.com/video/${encodeURIComponent(v)}`
+  }
+
+  if (p === 'kuaishou') {
+    if (/^https?:\/\//i.test(v)) return v
+    return `https://www.kuaishou.com/short-video/${encodeURIComponent(v)}`
   }
 
   return null
@@ -76,7 +148,7 @@ const buildJumpUrl = (sourceUrl: string, timeRange: string | null) => {
   try {
     const u = new URL(raw)
     if (timeRange) {
-      const start = timeRange.split('-')[0]
+      const start = timeRange.split('-')[0].trim()
       const seconds = parseTimestampSeconds(start)
       if (seconds != null) {
         u.searchParams.set('t', String(seconds))
@@ -90,26 +162,56 @@ const buildJumpUrl = (sourceUrl: string, timeRange: string | null) => {
 
 const buildTimeJumpIndex = (resources?: RagRetrieverResource[]) => {
   const index = new Map<string, { jumpUrl: string; score: number }>()
+
+  const setIndex = (key: string, jumpUrl: string, score: number) => {
+    const k = String(key || '').trim()
+    const url = String(jumpUrl || '').trim()
+    if (!k || !url) return
+    const s = Number.isFinite(score) ? score : 0
+    const prev = index.get(k)
+    if (!prev || s > prev.score) index.set(k, { jumpUrl: url, score: s })
+  }
+
   for (const r of resources || []) {
-    const timeRange = extractTimeRange(r.content || '')
-    if (!timeRange) continue
+    const content = String(r.content || '')
+    const score = typeof r.score === 'number' ? r.score : Number(r.score || 0)
 
     const meta = extractPlatformVideoId(r.content || '', r.document_name || '')
     const source =
       extractSourceUrl(r.content || '') || (meta ? buildSourceUrlFallback(meta.platform, meta.videoId) : null)
+
+    for (const link of extractOriginTimeLinks(content)) {
+      setIndex(link.time, link.url, score)
+    }
+
     if (!source) continue
 
-    const jumpUrl = buildJumpUrl(source, timeRange)
-    if (!jumpUrl) continue
-
-    const score = typeof r.score === 'number' ? r.score : Number(r.score || 0)
-    const prev = index.get(timeRange)
-    if (!prev || (Number.isFinite(score) && score > prev.score)) {
-      index.set(timeRange, { jumpUrl, score: Number.isFinite(score) ? score : 0 })
+    for (const t of extractTimeRanges(content)) {
+      const jumpUrl = buildJumpUrl(source, t)
+      if (!jumpUrl) continue
+      setIndex(t, jumpUrl, score)
+      const start = normalizeTimeRange(t.split('-')[0]) || ''
+      if (start) setIndex(start, jumpUrl, score)
     }
   }
 
   return index
+}
+
+const buildBestSourceUrl = (resources?: RagRetrieverResource[]) => {
+  for (const r of resources || []) {
+    const content = String(r.content || '')
+    const direct = extractSourceUrl(content)
+    if (direct && /^https?:\/\//i.test(direct)) return direct
+
+    const meta = extractPlatformVideoId(content, String(r.document_name || ''))
+    const fallback = meta ? buildSourceUrlFallback(meta.platform, meta.videoId) : null
+    if (fallback && /^https?:\/\//i.test(fallback)) return fallback
+
+    const links = extractOriginTimeLinks(content)
+    if (links.length > 0 && /^https?:\/\//i.test(links[0].url)) return links[0].url
+  }
+  return null
 }
 
 const injectTimeLinks = (markdown: string) => {
@@ -119,8 +221,8 @@ const injectTimeLinks = (markdown: string) => {
       // Avoid double-wrapping when it's already a Markdown link label: `[TIME=...](...)`.
       if (str[offset + full.length] === '(') return full
     }
-    const timeRange = String(rangeRaw || '').trim()
-    if (!TIME_RANGE_RE.test(`TIME=${timeRange}`)) return full
+    const timeRange = normalizeTimeRange(String(rangeRaw || ''))
+    if (!timeRange || !TIME_RANGE_RE.test(`TIME=${timeRange}`)) return full
     return `[${timeRange}](#time=${encodeURIComponent(timeRange)})`
   })
 }
@@ -362,6 +464,7 @@ const RagChatPanel = () => {
 
             const isSelected = !!(currentConversationId && effectiveSelectedReferenceMessageId === m.id)
             const timeJumpIndex = buildTimeJumpIndex(m.resources)
+            const fallbackSourceUrl = buildBestSourceUrl(m.resources)
             const renderedMarkdown = injectTimeLinks(m.content || '')
 
             return (
@@ -422,7 +525,12 @@ const RagChatPanel = () => {
                               // ignore
                             }
 
-                            const jumpUrl = timeJumpIndex.get(timeRange)?.jumpUrl ?? null
+                            const normalized = normalizeTimeRange(timeRange)
+                            const start = normalized ? normalized.split('-')[0].trim() : ''
+                            const jumpUrl =
+                              (normalized ? timeJumpIndex.get(normalized)?.jumpUrl : null) ??
+                              (start ? timeJumpIndex.get(start)?.jumpUrl : null) ??
+                              (fallbackSourceUrl && normalized ? buildJumpUrl(fallbackSourceUrl, normalized) : null)
 
                             return (
                               <button
@@ -442,8 +550,51 @@ const RagChatPanel = () => {
                                 disabled={!jumpUrl}
                               >
                                 <Clock className="h-3.5 w-3.5" />
-                                {children}
+                                {normalized || children}
                               </button>
+                            )
+                          }
+
+                          const hrefTime = extractTimeRanges(rawHref)?.[0] ?? null
+                          if (hrefTime) {
+                            const normalized = normalizeTimeRange(hrefTime)
+                            const jumpUrl =
+                              (normalized ? timeJumpIndex.get(normalized)?.jumpUrl : null) ??
+                              (fallbackSourceUrl && normalized ? buildJumpUrl(fallbackSourceUrl, normalized) : null)
+
+                            return (
+                              <button
+                                type="button"
+                                onClick={e => {
+                                  e.stopPropagation()
+                                  if (!jumpUrl) return
+                                  void openExternalUrl(jumpUrl)
+                                }}
+                                className={[
+                                  'inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-semibold transition-colors',
+                                  jumpUrl
+                                    ? 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
+                                    : 'cursor-not-allowed border-slate-200 bg-slate-50 text-slate-400',
+                                ].join(' ')}
+                                title={jumpUrl ? 'Open original video at this time' : undefined}
+                                disabled={!jumpUrl}
+                              >
+                                <Clock className="h-3.5 w-3.5" />
+                                {normalized || children}
+                              </button>
+                            )
+                          }
+
+                          if (rawHref.startsWith('#')) {
+                            return (
+                              <a
+                                href={href}
+                                onClick={e => e.stopPropagation()}
+                                className="text-primary hover:text-primary/80 font-medium underline underline-offset-4"
+                                {...props}
+                              >
+                                {children}
+                              </a>
                             )
                           }
 

@@ -423,8 +423,17 @@ def sync_scan():
                 minio_bundle_exists = None
 
         if minio_tombstone_exists is True:
-            status = "DELETED"
-        elif has_remote and minio_bundle_exists is False:
+            # Tombstone means the remote item is deleted. If we still have local files,
+            # present it as LOCAL_ONLY (remote already removed) so users can "入库" again.
+            if has_local:
+                status = "LOCAL_ONLY"
+                remote_has_note = False
+                remote_has_transcript = False
+                remote_note = None
+                remote_transcript = None
+            else:
+                status = "DELETED"
+        elif (not has_local) and has_remote and minio_bundle_exists is False:
             status = "DIFY_ONLY_NO_BUNDLE"
         elif status == "SYNCED":
             # Detect real conflicts only when we can compare hashes.
@@ -624,9 +633,47 @@ def sync_items_cached():
             if isinstance(dt, datetime):
                 last_scanned_at = dt if last_scanned_at is None or dt > last_scanned_at else last_scanned_at
 
+            base_status = str(getattr(row, "status", "") or "").strip()
+            remote_has_note = getattr(row, "remote_has_note", None)
+            if not isinstance(remote_has_note, bool):
+                remote_has_note = bool(str(getattr(row, "dify_note_document_id", "") or "").strip())
+            remote_has_transcript = getattr(row, "remote_has_transcript", None)
+            if not isinstance(remote_has_transcript, bool):
+                remote_has_transcript = bool(str(getattr(row, "dify_transcript_document_id", "") or "").strip())
+
+            status = base_status
+            tombstone = getattr(row, "minio_tombstone_exists", None)
+            if tombstone is True:
+                if local_task_id:
+                    status = "LOCAL_ONLY"
+                    remote_has_note = False
+                    remote_has_transcript = False
+                else:
+                    status = "DELETED"
+            elif str(base_status or "").upper() not in {"CONFLICT", "DELETED"}:
+                has_local = bool(local_task_id)
+                has_remote = bool(remote_has_note or remote_has_transcript)
+                if has_local and has_remote:
+                    if bool(local_has_note) == bool(remote_has_note) and bool(local_has_transcript) == bool(remote_has_transcript):
+                        status = "SYNCED"
+                    else:
+                        status = "PARTIAL"
+                elif has_local and not has_remote:
+                    status = "LOCAL_ONLY"
+
+            dify_note_document_id = getattr(row, "dify_note_document_id", None)
+            dify_note_name = getattr(row, "dify_note_name", None)
+            dify_transcript_document_id = getattr(row, "dify_transcript_document_id", None)
+            dify_transcript_name = getattr(row, "dify_transcript_name", None)
+            if tombstone is True and local_task_id:
+                dify_note_document_id = None
+                dify_note_name = None
+                dify_transcript_document_id = None
+                dify_transcript_name = None
+
             merged.append(
                 {
-                    "status": str(getattr(row, "status", "") or ""),
+                    "status": status,
                     "title": str(getattr(row, "title", "") or "") or (local.title if local else ""),
                     "platform": str(getattr(row, "platform", "") or "") or (local.platform if local else ""),
                     "video_id": str(getattr(row, "video_id", "") or "") or (local.video_id if local else ""),
@@ -636,12 +683,12 @@ def sync_items_cached():
                     "local_task_id": local_task_id,
                     "local_has_note": local_has_note,
                     "local_has_transcript": local_has_transcript,
-                    "dify_note_document_id": getattr(row, "dify_note_document_id", None),
-                    "dify_note_name": getattr(row, "dify_note_name", None),
-                    "dify_transcript_document_id": getattr(row, "dify_transcript_document_id", None),
-                    "dify_transcript_name": getattr(row, "dify_transcript_name", None),
-                    "remote_has_note": getattr(row, "remote_has_note", None),
-                    "remote_has_transcript": getattr(row, "remote_has_transcript", None),
+                    "dify_note_document_id": dify_note_document_id,
+                    "dify_note_name": dify_note_name,
+                    "dify_transcript_document_id": dify_transcript_document_id,
+                    "dify_transcript_name": dify_transcript_name,
+                    "remote_has_note": remote_has_note,
+                    "remote_has_transcript": remote_has_transcript,
                     "minio_bundle_exists": getattr(row, "minio_bundle_exists", None),
                     "minio_tombstone_exists": getattr(row, "minio_tombstone_exists", None),
                     "bundle_sha256_local": getattr(row, "bundle_sha256_local", None),
@@ -702,6 +749,7 @@ class SyncPushRequest(BaseModel):
     item_id: str
     include_transcript: bool = True
     include_note: bool = True
+    update_dify: bool = True
 
     @field_validator("item_id", mode="before")
     @classmethod
@@ -805,6 +853,17 @@ def sync_push(data: SyncPushRequest):
             storage.put_bytes(bucket=bucket, object_key=object_key, data=bundle, content_type="application/zip", metadata=metadata)
     except Exception as exc:
         return R.error(msg=str(exc), code=500)
+
+    if not bool(data.update_dify):
+        return R.success(
+            data={
+                "source_key": source_key,
+                "sync_id": sync_id,
+                "minio": {"bucket": bucket, "object_key": object_key, "bundle_sha256": bundle_sha256},
+                "dify": {"note": None, "transcript": None},
+                "dify_error": None,
+            }
+        )
 
     # Upsert Dify documents (for RAG); use doc name matching for idempotency.
     dify_info: dict[str, Any] = {"note": None, "transcript": None}
