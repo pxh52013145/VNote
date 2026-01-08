@@ -37,8 +37,10 @@ class DifyConfig:
         indexing_technique = os.getenv("DIFY_INDEXING_TECHNIQUE", "high_quality").strip() or "high_quality"
         timeout_seconds = float(os.getenv("DIFY_TIMEOUT_SECONDS", "60") or "60")
 
-        persisted = DifyConfigManager().get()
-        if isinstance(persisted, dict) and persisted:
+        mgr = DifyConfigManager()
+        # Only apply persisted overrides when dify.json exists; otherwise allow env-only setup.
+        persisted = mgr.get() if mgr.path.exists() else {}
+        if isinstance(persisted, dict) and persisted is not None:
             p_base_url = str(persisted.get("base_url") or "").strip()
             if p_base_url:
                 base_url = p_base_url
@@ -59,9 +61,10 @@ class DifyConfig:
             if p_service_key:
                 service_api_key = p_service_key
 
-            p_app_key = str(persisted.get("app_api_key") or "").strip()
-            if p_app_key:
-                app_api_key = p_app_key
+            # Note: app_api_key is scheme-scoped; allow empty to override env so switching to an empty
+            # scheme does not silently fall back to DIFY_APP_API_KEY from `.env`.
+            if "app_api_key" in persisted:
+                app_api_key = str(persisted.get("app_api_key") or "").strip() or None
 
             p_app_user = str(persisted.get("app_user") or "").strip()
             if p_app_user:

@@ -47,6 +47,16 @@ class DifyConfigManager:
 
     _DEFAULT_APP_SCHEME = "default"
 
+    @staticmethod
+    def _pick_unique_name(existing: set[str], base: str) -> str:
+        b = (base or "").strip() or "main"
+        if b not in existing:
+            return b
+        i = 2
+        while f"{b}-{i}" in existing:
+            i += 1
+        return f"{b}-{i}"
+
     def _normalize_profile_cfg(self, cfg: dict[str, Any]) -> dict[str, Any]:
         """
         Ensure per-profile structure exists for RAG App schemes.
@@ -67,8 +77,44 @@ class DifyConfigManager:
                 schemes[n] = scfg if isinstance(scfg, dict) else {}
 
         legacy_app_key = str(data.get("app_api_key") or "").strip()
+
+        # Always ensure a "default" scheme exists and stays empty by default.
         if not schemes:
-            schemes[self._DEFAULT_APP_SCHEME] = {"app_api_key": legacy_app_key} if legacy_app_key else {}
+            schemes[self._DEFAULT_APP_SCHEME] = {}
+            if legacy_app_key:
+                migrated_name = self._pick_unique_name(set(schemes.keys()), "main")
+                schemes[migrated_name] = {"app_api_key": legacy_app_key}
+                data["active_app_scheme"] = migrated_name
+        elif self._DEFAULT_APP_SCHEME not in schemes:
+            schemes[self._DEFAULT_APP_SCHEME] = {}
+
+        # If someone previously stored a key under the "default" scheme (older versions),
+        # migrate it to a non-default scheme so "default" stays empty (as a placeholder).
+        default_cfg = schemes.get(self._DEFAULT_APP_SCHEME) or {}
+        default_key = str((default_cfg.get("app_api_key") if isinstance(default_cfg, dict) else "") or "").strip()
+        if default_key:
+            # Find an existing non-default scheme with the same key; otherwise create a new one.
+            target = None
+            for name, scfg in schemes.items():
+                if name == self._DEFAULT_APP_SCHEME or not isinstance(scfg, dict):
+                    continue
+                if str(scfg.get("app_api_key") or "").strip() == default_key:
+                    target = name
+                    break
+            if not target:
+                target = self._pick_unique_name(set(schemes.keys()), "main")
+                schemes[target] = {"app_api_key": default_key}
+
+            # Clear default scheme key (keep the scheme but remove secret).
+            if isinstance(default_cfg, dict) and "app_api_key" in default_cfg:
+                default_cfg = dict(default_cfg)
+                default_cfg.pop("app_api_key", None)
+                schemes[self._DEFAULT_APP_SCHEME] = default_cfg
+
+            # If active scheme was default (or unset), keep previous behavior by activating the migrated scheme.
+            raw_active = str(data.get("active_app_scheme") or "").strip()
+            if raw_active in {"", self._DEFAULT_APP_SCHEME}:
+                data["active_app_scheme"] = target
 
         active_scheme = str(data.get("active_app_scheme") or "").strip()
         if not active_scheme or active_scheme not in schemes:
@@ -76,6 +122,14 @@ class DifyConfigManager:
                 active_scheme = self._DEFAULT_APP_SCHEME
             else:
                 active_scheme = next(iter(schemes.keys()))
+
+        # If we have a legacy mirror key but the active scheme has no key, hydrate it.
+        if legacy_app_key and active_scheme in schemes and active_scheme != self._DEFAULT_APP_SCHEME:
+            scfg = schemes.get(active_scheme) or {}
+            if isinstance(scfg, dict) and not str(scfg.get("app_api_key") or "").strip():
+                scfg = dict(scfg)
+                scfg["app_api_key"] = legacy_app_key
+                schemes[active_scheme] = scfg
 
         active_key = str((schemes.get(active_scheme) or {}).get("app_api_key") or "").strip()
 
@@ -87,6 +141,7 @@ class DifyConfigManager:
         return data
 
     def _read_state_normalized(self) -> tuple[str, dict[str, dict[str, Any]]]:
+        existed = self.path.exists()
         active, profiles = self._read_state()
         changed = False
         normalized: dict[str, dict[str, Any]] = {}
@@ -96,14 +151,14 @@ class DifyConfigManager:
             if cfg != ncfg:
                 changed = True
 
-        if changed:
+        if changed and existed:
             try:
                 self._write_state(active_profile=active, profiles=normalized)
             except Exception:
                 pass
             return active, normalized
 
-        return active, profiles
+        return active, normalized if changed else profiles
 
     def _read_raw(self) -> dict[str, Any]:
         if not self.path.exists():
