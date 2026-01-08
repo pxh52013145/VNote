@@ -5,6 +5,7 @@ import os
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 
 def _default_config_dir() -> Path:
@@ -149,6 +150,86 @@ class DifyConfigManager:
             ncfg = self._normalize_profile_cfg(cfg if isinstance(cfg, dict) else {})
             normalized[name] = ncfg
             if cfg != ncfg:
+                changed = True
+
+        template_profile = self._normalize_profile_cfg({})
+        if "default" not in normalized:
+            normalized["default"] = template_profile
+            changed = True
+
+        # Keep "default" as an empty template profile. If legacy data exists under default,
+        # migrate it into a new profile and clear default.
+        default_cfg = normalized.get("default") or {}
+        if isinstance(default_cfg, dict):
+            def _has_data(cfg: dict[str, Any]) -> bool:
+                for k in (
+                    "base_url",
+                    "dataset_id",
+                    "note_dataset_id",
+                    "transcript_dataset_id",
+                    "service_api_key",
+                    "indexing_technique",
+                    "app_user",
+                ):
+                    if str(cfg.get(k) or "").strip():
+                        return True
+                if cfg.get("timeout_seconds") not in (None, ""):
+                    return True
+
+                schemes = cfg.get("app_schemes")
+                if isinstance(schemes, dict):
+                    for name, scfg in schemes.items():
+                        if name != self._DEFAULT_APP_SCHEME:
+                            return True
+                        if isinstance(scfg, dict) and str(scfg.get("app_api_key") or "").strip():
+                            return True
+
+                active_scheme = str(cfg.get("active_app_scheme") or "").strip()
+                if active_scheme and active_scheme != self._DEFAULT_APP_SCHEME:
+                    return True
+
+                allowed = {
+                    "app_schemes",
+                    "active_app_scheme",
+                    "app_api_key",
+                    "base_url",
+                    "dataset_id",
+                    "note_dataset_id",
+                    "transcript_dataset_id",
+                    "service_api_key",
+                    "indexing_technique",
+                    "app_user",
+                    "timeout_seconds",
+                }
+                for k in cfg.keys():
+                    if k not in allowed:
+                        return True
+                return False
+
+            if _has_data(default_cfg):
+                # Suggest a readable profile name.
+                base = "main"
+                base_url = str(default_cfg.get("base_url") or "").strip()
+                if base_url:
+                    try:
+                        parts = urlparse(base_url)
+                        host = parts.hostname or parts.netloc
+                        if host:
+                            base = host.replace(":", "-")
+                            if parts.port:
+                                base = f"{base}-{parts.port}"
+                    except Exception:
+                        base = "main"
+
+                dataset_id = str(default_cfg.get("dataset_id") or "").strip()
+                if dataset_id:
+                    base = f"{base}-{dataset_id[:8]}"
+
+                new_name = self._pick_unique_name(set(normalized.keys()), base)
+                normalized[new_name] = default_cfg
+                normalized["default"] = template_profile
+                if active == "default":
+                    active = new_name
                 changed = True
 
         if changed and existed:
@@ -429,6 +510,8 @@ class DifyConfigManager:
         target = (name or "").strip()
         if not target:
             raise ValueError("Profile name cannot be empty")
+        if target == "default":
+            raise ValueError("Cannot delete the default template profile")
         active, profiles = self._read_state()
         if target not in profiles:
             return

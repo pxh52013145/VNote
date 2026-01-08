@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException
+from urllib.parse import urlparse
 from pydantic import BaseModel, field_validator
 from typing import Optional
 from app.utils.response import ResponseWrapper as R
@@ -251,7 +252,41 @@ def update_dify_config(data: DifyConfigUpdateRequest):
     if data.timeout_seconds is not None:
         patch["timeout_seconds"] = data.timeout_seconds
 
-    dify_config_manager.update(patch)
+    # Normalize/migrate first (keeps default as template if legacy data existed).
+    existing_profiles = dify_config_manager.list_profiles()
+    active = dify_config_manager.get_active_profile()
+
+    # Keep "default" as an empty template: saving under default auto-creates a new profile.
+    if active == "default":
+        base = "profile"
+        base_url = str(patch.get("base_url") or "").strip()
+        if base_url:
+            try:
+                parts = urlparse(base_url)
+                host = parts.hostname or parts.netloc
+                if host:
+                    base = host.replace(":", "-")
+                    if parts.port:
+                        base = f"{base}-{parts.port}"
+            except Exception:
+                base = "profile"
+
+        dataset_id = str(patch.get("dataset_id") or "").strip()
+        if dataset_id:
+            base = f"{base}-{dataset_id[:8]}"
+
+        existing = set(existing_profiles.keys())
+        name = base.strip() or "profile"
+        if name in existing:
+            i = 2
+            while f"{name}-{i}" in existing:
+                i += 1
+            name = f"{name}-{i}"
+
+        dify_config_manager.upsert_profile(name, patch, clone_from=None, activate=True)
+    else:
+        dify_config_manager.update(patch)
+
     return get_dify_config()
 
 

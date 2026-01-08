@@ -167,15 +167,31 @@ const DifySetting = () => {
     try {
       const patch = buildPatchFromForm(values)
 
+      const prevProfile = activeProfile
+      const prevScheme = activeAppScheme
       const updated = await updateDifyConfig(patch)
-      toast.success('Dify 配置已保存（立即生效）')
       applyConfigToForm(updated)
       try {
-        const schemePayload = await getDifyAppSchemes()
+        const [profilePayload, schemePayload] = await Promise.all([getDifyProfiles(), getDifyAppSchemes()])
+        setProfiles(profilePayload.profiles || [])
+        const nextProfile = profilePayload.active_profile || updated.active_profile || prevProfile
+        setActiveProfile(nextProfile)
+
         setAppSchemes(schemePayload.schemes || [])
-        setActiveAppScheme(schemePayload.active_app_scheme || updated.active_app_scheme || 'default')
+        const nextScheme = schemePayload.active_app_scheme || updated.active_app_scheme || prevScheme || 'default'
+        setActiveAppScheme(nextScheme)
+
+        if (prevProfile === 'default' && nextProfile !== 'default') {
+          toast.success(`已自动生成方案：${nextProfile}`)
+        } else {
+          toast.success('Dify 配置已保存（立即生效）')
+        }
+        if (nextProfile !== prevProfile || nextScheme !== prevScheme) {
+          window.dispatchEvent(new CustomEvent('rag-context-changed'))
+        }
       } catch {
         // Ignore scheme refresh errors; config save already succeeded.
+        toast.success('Dify 配置已保存（立即生效）')
       }
       useSyncStore.getState().scan({ silent: true })
     } catch (e: unknown) {
