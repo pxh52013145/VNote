@@ -393,7 +393,7 @@ Dify Chat API 的 blocking 返回中包含 `metadata.retriever_resources`（引�
 ### 11.2 核心设计（稳定可对账）
 - 标识：`source_key = platform:video_id:created_at_ms`；`sync_id = sha256(source_key)`
   - 同一 `platform:video_id` 允许多次生成，用 `created_at_ms` 区分版本/批次（满足“同一视频多份笔记”）。
-- 存储隔离：MinIO 全局一套服务，但按 Dify Profile 分 Bucket：`bucket = MINIO_BUCKET_PREFIX + <active_profile>`
+- 存储隔离：MinIO 全局一套服务，但按 Dify Profile 分 Bucket：bucket 由 profile 名称派生（S3 安全 slug + hash）+ `MINIO_BUCKET_PREFIX`
 - Dify 文档命名：`<title> [platform:video_id:created_at_ms] (note|transcript)`（便于 `list_documents` 直接解析出 `source_key`）
 
 ### 11.3 对账状态（UI 标签）
