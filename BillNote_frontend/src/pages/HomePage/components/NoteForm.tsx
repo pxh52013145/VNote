@@ -734,12 +734,11 @@ const NoteForm = () => {
                     const url = String(watchedVideoUrls?.[idx] ?? '').trim()
                     const inferred = inferWebPlatformFromUrl(url)
                     const meta = inferred ? getPlatformMeta(inferred) : undefined
-                    const showIcon = Boolean(meta)
 
                     return (
                       <div key={row.id} className="flex gap-2">
                         <div
-                          className={`flex h-10 w-10 items-center justify-center rounded-md border border-slate-200 bg-white ${showIcon ? '' : 'invisible'}`}
+                          className="flex h-10 w-10 items-center justify-center rounded-md border border-slate-200 bg-white"
                         >
                           <div className="h-5 w-5">{meta ? meta.logo() : null}</div>
                         </div>

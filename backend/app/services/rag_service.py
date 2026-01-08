@@ -55,6 +55,16 @@ def _normalize_source_url(url: str) -> str:
     return urlunsplit((parts.scheme, parts.netloc, parts.path, query, ""))
 
 
+_TRUE_VALUES = {"1", "true", "yes", "y", "on"}
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in _TRUE_VALUES
+
+
 def _merge_transcript_segments_by_chars(
     segments: list[Any] | None,
     *,
@@ -165,20 +175,25 @@ def build_rag_document_text(
     parts: list[str] = []
     parts.extend(header)
 
-    max_chars = int(os.getenv("RAG_TRANSCRIPT_MERGE_MAX_CHARS", "900") or "900")
-    max_seconds = float(os.getenv("RAG_TRANSCRIPT_MERGE_MAX_SECONDS", "60") or "60")
-    merged = _merge_transcript_segments_by_chars(
-        transcript.segments,
-        max_chars=max_chars,
-        max_seconds=max_seconds,
-    )
-    if merged:
-        for start_s, end_s, text in merged:
-            start = _format_timestamp(start_s)
-            end = _format_timestamp(end_s)
-            parts.append(f"[VID={audio.video_id}][PLATFORM={platform}][TIME={start}-{end}] {text}")
-            parts.append("")
-    else:
+    premerge = _env_bool("RAG_TRANSCRIPT_PREMERGE", False)
+    if premerge:
+        max_chars = int(os.getenv("RAG_TRANSCRIPT_MERGE_MAX_CHARS", "900") or "900")
+        max_seconds = float(os.getenv("RAG_TRANSCRIPT_MERGE_MAX_SECONDS", "60") or "60")
+        merged = _merge_transcript_segments_by_chars(
+            transcript.segments,
+            max_chars=max_chars,
+            max_seconds=max_seconds,
+        )
+        if merged:
+            for start_s, end_s, text in merged:
+                start = _format_timestamp(start_s)
+                end = _format_timestamp(end_s)
+                parts.append(f"[VID={audio.video_id}][PLATFORM={platform}][TIME={start}-{end}] {text}")
+                parts.append("")
+        else:
+            premerge = False
+
+    if not premerge:
         for seg in transcript.segments or []:
             text = (seg.text or "").replace("\n", " ").strip()
             if not text:
@@ -220,20 +235,25 @@ def build_rag_document_text_with_note(
     parts.append("[TRANSCRIPT]")
     parts.append("")
 
-    max_chars = int(os.getenv("RAG_TRANSCRIPT_MERGE_MAX_CHARS", "900") or "900")
-    max_seconds = float(os.getenv("RAG_TRANSCRIPT_MERGE_MAX_SECONDS", "60") or "60")
-    merged = _merge_transcript_segments_by_chars(
-        transcript.segments,
-        max_chars=max_chars,
-        max_seconds=max_seconds,
-    )
-    if merged:
-        for start_s, end_s, text in merged:
-            start = _format_timestamp(start_s)
-            end = _format_timestamp(end_s)
-            parts.append(f"[VID={audio.video_id}][PLATFORM={platform}][TIME={start}-{end}] {text}")
-            parts.append("")
-    else:
+    premerge = _env_bool("RAG_TRANSCRIPT_PREMERGE", False)
+    if premerge:
+        max_chars = int(os.getenv("RAG_TRANSCRIPT_MERGE_MAX_CHARS", "900") or "900")
+        max_seconds = float(os.getenv("RAG_TRANSCRIPT_MERGE_MAX_SECONDS", "60") or "60")
+        merged = _merge_transcript_segments_by_chars(
+            transcript.segments,
+            max_chars=max_chars,
+            max_seconds=max_seconds,
+        )
+        if merged:
+            for start_s, end_s, text in merged:
+                start = _format_timestamp(start_s)
+                end = _format_timestamp(end_s)
+                parts.append(f"[VID={audio.video_id}][PLATFORM={platform}][TIME={start}-{end}] {text}")
+                parts.append("")
+        else:
+            premerge = False
+
+    if not premerge:
         for seg in transcript.segments or []:
             text = (seg.text or "").replace("\n", " ").strip()
             if not text:
